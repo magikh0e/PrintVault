@@ -373,7 +373,7 @@ table.t .num{font-family:var(--mono);text-align:right;font-size:12px}
  * Copyright (C) 2026 magikh0e
  * License: GPL-3.0-or-later (https://www.gnu.org/licenses/gpl-3.0.html)
  */
-const APP_VERSION = '0.2.3';
+const APP_VERSION = '0.2.4';
 
 /* ============================================================
    U — utilities
@@ -468,15 +468,19 @@ const I = (function(){
 /* ============================================================
    DB — IndexedDB wrapper (stores + keyval meta)
    ============================================================ */
-/* 'parked' holds model metadata from a backup that has nothing to attach to
-   yet, because the folder hasn't been added or scanned. Scanning claims it. */
-const STORES = ['meta','roots','files','models','prints','filaments','printers','queue','thumbs','parked'];
+const STORES = ['meta','roots','files','models','prints','filaments','printers','queue','thumbs'];
 const DB = {
   _db:null,
+  /* Opened without a version on purpose. Asking for a specific one means an
+     older copy of the app, served from a stale cache or a second window,
+     asks for a lower version and dies with a VersionError, while a newer one
+     blocks on any connection the old window is still holding and waits for
+     ever. Neither is worth risking to add a store: anything new goes into
+     'meta' as a record instead. */
   open(){
     if(DB._db) return Promise.resolve(DB._db);
     return new Promise((res,rej)=>{
-      const req = indexedDB.open('printvault', 2);
+      const req = indexedDB.open('printvault');
       req.onupgradeneeded = e=>{
         const db = e.target.result;
         STORES.forEach(name=>{
@@ -488,7 +492,14 @@ const DB = {
           if(name==='queue'){ st.createIndex('modelId','modelId'); }
         });
       };
-      req.onsuccess = ()=>{ DB._db = req.result; res(DB._db); };
+      // another window mid-upgrade: say so rather than sit on a blank page
+      req.onblocked = ()=>rej(new Error('another PrintVault window has the database open, close it and reload'));
+      req.onsuccess = ()=>{
+        DB._db = req.result;
+        // let a future upgrade in a newer tab proceed instead of blocking it
+        DB._db.onversionchange = ()=>{ try{ DB._db.close(); }catch(e){} DB._db = null; };
+        res(DB._db);
+      };
       req.onerror = ()=>rej(req.error);
     });
   },
@@ -552,13 +563,21 @@ const Store = {
   async load(){
     const meta = await DB.get('meta','settings');
     if(meta && meta.v) Object.assign(Store.settings, meta.v);
-    const [roots,models,files,prints,filaments,printers,queue,parked] = await Promise.all([
+    const parked = await DB.get('meta','parked');
+    const [roots,models,files,prints,filaments,printers,queue] = await Promise.all([
       DB.all('roots'), DB.all('models'), DB.all('files'), DB.all('prints'),
-      DB.all('filaments'), DB.all('printers'), DB.all('queue'), DB.all('parked')
+      DB.all('filaments'), DB.all('printers'), DB.all('queue')
     ]);
     Store.roots=roots; Store.models=models; Store.files=files;
     Store.prints=prints; Store.filaments=filaments; Store.printers=printers; Store.queue=queue;
-    Store.parked=parked;
+    Store.parked = (parked && parked.v) || [];
+    // 0.2.3 briefly kept these in a store of their own; bring them across
+    if(!Store.parked.length && DB._db && DB._db.objectStoreNames.contains('parked')){
+      try{
+        const old = await DB.all('parked');
+        if(old.length){ Store.parked = old; await DB.put('meta',{id:'parked', v:old}); await DB.clear('parked'); }
+      }catch(e){}
+    }
     Store.reindex();
   },
   reindex(){
@@ -1673,6 +1692,10 @@ const Meta = {
     return hit;
   },
 
+  // one record in 'meta' rather than a store of its own, so restoring a
+  // backup never needs a schema change (see DB.open)
+  save(){ return DB.put('meta', {id:'parked', v:Store.parked}); },
+
   async park(entries){
     const recs = [];
     for(const e of entries){
@@ -1683,10 +1706,10 @@ const Meta = {
       recs.push(rec);
     }
     if(!recs.length) return 0;
-    await DB.putMany('parked', recs);
     const byId = new Map(Store.parked.map(p=>[p.id,p]));
     recs.forEach(r=>byId.set(r.id, r));
     Store.parked = Array.from(byId.values());
+    await Meta.save();
     return recs.length;
   },
 
@@ -1714,15 +1737,15 @@ const Meta = {
     }
     if(!claimed.length) return 0;
     for(const m of touched.values()) await Store.put('models', m);
-    await DB.delMany('parked', claimed);
     const gone = new Set(claimed);
     Store.parked = Store.parked.filter(p=>!gone.has(p.id));
+    await Meta.save();
     return claimed.length;
   },
 
   async clear(){
-    await DB.clear('parked');
     Store.parked = [];
+    await Meta.save();
   }
 };
 
