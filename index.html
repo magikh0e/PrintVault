@@ -373,7 +373,7 @@ table.t .num{font-family:var(--mono);text-align:right;font-size:12px}
  * Copyright (C) 2026 magikh0e
  * License: GPL-3.0-or-later (https://www.gnu.org/licenses/gpl-3.0.html)
  */
-const APP_VERSION = '0.2.0';
+const APP_VERSION = '0.2.1';
 
 /* ============================================================
    U — utilities
@@ -1662,17 +1662,16 @@ const Scan = {
     Modal.open('Could not open that folder',
       '<div class="note bad"><b>The browser refused access.</b><br>'+
       '<span class="mono" style="font-size:12px">'+U.esc(msg)+'</span></div>'+
-      '<p style="color:var(--dim);line-height:1.65;margin:0 0 10px">Chromium blocks a few locations outright, '+
-      'no matter what permission you grant:</p>'+
+      '<p style="color:var(--dim);line-height:1.65;margin:0 0 10px">Things worth trying, roughly in order:</p>'+
       '<ul style="line-height:1.85;color:var(--dim);padding-left:20px;margin:0 0 14px">'+
-        '<li><b>The root of a drive.</b> Pick a folder inside it instead of <code>C:\\</code>, <code>P:\\</code> '+
-          'or the drive letter on its own.</li>'+
-        '<li><b>System and program folders</b>, and the top of your user profile.</li>'+
+        '<li><b>Pick a folder inside it</b> rather than a drive letter on its own. '+
+          'Browsers refuse some locations outright regardless of permission.</li>'+
+        '<li><b>Avoid system and program folders</b>, and the top of your user profile.</li>'+
+        '<li><b>On a network share</b>, make sure it is connected in Explorer first. '+
+          'A browser cannot reconnect a dropped mapping. Reaching it through the network path '+
+          '(<code>\\\\server\\share\\folder</code>) sometimes works when the drive letter does not.</li>'+
       '</ul>'+
-      '<div class="note"><b>On a mapped network drive</b> such as <code>P:\\</code> pointing at a NAS, pick a '+
-      'subfolder rather than the share root. If the drive letter still fails, try reaching the same folder '+
-      'through the network path (<code>\\\\server\\share\\folder</code>) by pasting it into the picker\'s '+
-      'address bar. The share must be connected and reachable before you pick it.</div>',
+      '<div class="note">The desktop build has none of these restrictions, if this keeps getting in the way.</div>',
       '<button class="b" onclick="PV.Modal.close()">Close</button>'+
       '<button class="b p" onclick="PV.Modal.close();PV.Scan.addRoot()">Try another folder</button>');
   },

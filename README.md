@@ -19,16 +19,16 @@ Nothing to install if you just want to try it: open
 [printvault.magikh0e.pl](https://printvault.magikh0e.pl/) in Chrome, Edge,
 Brave or Opera and point it at a folder.
 
-The desktop app is worth it if you keep files on a mapped network drive, if
-you have a lot of them, or if you're tired of re-granting folder access every
-session. Grab an installer from
+The desktop app is worth it if you have a lot of files, keep them on a network
+share, or are tired of re-granting folder access every session. Grab an
+installer from
 [Releases](https://github.com/magikh0e/PrintVault/releases):
 
 | Platform | File |
 | --- | --- |
 | Windows | `.msi` or `.exe` |
 | macOS | `.dmg` (universal, Intel and Apple Silicon) |
-| Linux | `.AppImage` or `.deb` |
+| Linux | `.AppImage`, `.deb` or `.rpm` |
 
 The builds aren't code signed, because certificates cost more than this
 project does. Windows SmartScreen will want "More info" then "Run anyway", and
@@ -86,9 +86,9 @@ its filesystem layer when it loads, either the File System Access API or
 native calls through Tauri, and the other 96% of the code doesn't know or care
 which. No build step, no bundler, no dependencies.
 
-## Running it
+## Self-hosting the web version
 
-In a browser, serve the folder over `https` or `http://localhost` and open
+Serve the folder over `https` or `http://localhost` and open
 `index.html`. It won't work from a `file://` path, because browsers only hand
 out folder access in a secure context. Chromium only for the folder part
 (Chrome, Edge, Brave, Opera), since Firefox and Safari don't implement the API.
@@ -126,12 +126,11 @@ WebView2 showing a blank window.
 Almost everything annoying about the browser version is the browser, not the
 app.
 
-Chromium refuses drive roots outright, and a mapped network drive is a drive
-root, so `P:\` pointing at a NAS simply won't open. It also forgets folder
-access between sessions, so every visit starts with a permission prompt.
-Neither applies here: roots are stored as paths, and paths survive a restart.
+Browsers forget folder access between sessions, so every visit starts by
+clicking Scan to re-grant it. Roots are stored as paths here, and paths
+survive a restart.
 
-Speed is the other one. A browser has to open every file individually just to
+Speed is the bigger one. A browser has to open every file individually just to
 learn how big it is. One Rust call returns the whole listing with sizes and
 timestamps, which on a network share is the difference between minutes and
 seconds.
@@ -142,12 +141,6 @@ and zstd, which browsers can't inflate at all.
 
 And Firefox and Safari don't implement the File System Access API, so the web
 version can't work there no matter what. The desktop build doesn't care.
-
-## Releases
-
-Push a tag matching `desktop-v*` and the workflow builds installers for
-Windows, macOS and Linux, then opens a draft release. Tauri can't
-cross-compile, so each one is built on its own runner.
 
 ## Licence
 
