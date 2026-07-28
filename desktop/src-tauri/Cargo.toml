@@ -1,6 +1,6 @@
 [package]
 name = "printvault-desktop"
-version = "0.2.1"
+version = "0.2.4"
 description = "PrintVault desktop client"
 authors = ["magikh0e"]
 edition = "2021"
