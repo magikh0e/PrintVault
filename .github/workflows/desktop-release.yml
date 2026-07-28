@@ -8,9 +8,9 @@
 #   - push a tag matching desktop-v*   (e.g. desktop-v0.2.0)  -> release build
 #   - or run manually from the Actions tab (workflow_dispatch)
 #
-# Output: a DRAFT GitHub Release named "PrintVault Desktop v<version>" with the
-# .dmg (macOS, universal), .AppImage/.deb (Linux) and .msi/.exe (Windows).
-# Review the draft and hit Publish when you're happy with it.
+# Output: one DRAFT GitHub Release named "PrintVault Desktop v<version>" with
+# the .dmg (macOS, universal), .AppImage/.deb/.rpm (Linux) and .msi/.exe
+# (Windows). Review the draft and hit Publish when you're happy with it.
 
 name: Desktop release
 
@@ -24,7 +24,36 @@ permissions:
   contents: write
 
 jobs:
+  # The three runners finish at roughly the same time, and if each is left to
+  # create the release itself they race and you end up with two drafts sharing
+  # the same tag, one holding the macOS build and one holding the rest. So the
+  # release is made once here and the builds upload into it by id.
+  release:
+    runs-on: ubuntu-latest
+    outputs:
+      id: ${{ steps.mk.outputs.id }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Read version
+        id: v
+        run: echo "v=$(node -p "require('./desktop/src-tauri/tauri.conf.json').version")" >> "$GITHUB_OUTPUT"
+      - name: Create or reuse the draft
+        id: mk
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: desktop-v${{ steps.v.outputs.v }}
+        run: |
+          id=$(gh api repos/${{ github.repository }}/releases \
+                --jq ".[] | select(.tag_name==\"$TAG\") | .id" | head -1)
+          if [ -z "$id" ]; then
+            id=$(gh api --method POST repos/${{ github.repository }}/releases \
+                  -f tag_name="$TAG" -f name="PrintVault Desktop v${{ steps.v.outputs.v }}" \
+                  -F draft=true -F prerelease=false --jq '.id')
+          fi
+          echo "id=$id" >> "$GITHUB_OUTPUT"
+
   build:
+    needs: release
     strategy:
       fail-fast: false
       matrix:
@@ -87,7 +116,4 @@ jobs:
         with:
           projectPath: desktop
           args: ${{ matrix.args }}
-          tagName: desktop-v__VERSION__
-          releaseName: "PrintVault Desktop v__VERSION__"
-          releaseDraft: true
-          prerelease: false
+          releaseId: ${{ needs.release.outputs.id }}
