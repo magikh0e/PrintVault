@@ -151,6 +151,16 @@ and zstd, which browsers can't inflate at all.
 And Firefox and Safari don't implement the File System Access API, so the web
 version can't work there no matter what. The desktop build doesn't care.
 
+## Support
+
+Free and open source, built and maintained in my own time, with no accounts,
+tracking or ads. If it's saved you a failed print or a few gigabytes, a beer
+helps keep it going.
+
+[![Buy me a beer](https://img.buymeacoffee.com/button-api/?text=Buy%20me%20a%20beer&emoji=%F0%9F%8D%BA&slug=magikh0e&button_colour=FFDD00&font_colour=000000&font_family=Cookie&outline_colour=000000&coffee_colour=ffffff)](https://buymeacoffee.com/magikh0e)
+
+Bug reports and folder layouts that break the scanner are just as useful.
+
 ## Licence
 
 GPL-3.0-or-later, see [LICENSE](LICENSE).
