@@ -31,12 +31,26 @@ pub struct WalkResult {
     truncated: bool,
 }
 
-/// Native folder picker. Blocking so the caller gets a path or nothing.
+/// Native folder picker.
+///
+/// Must be `async`, and must not use the plugin's `blocking_` variant. A sync
+/// command runs on the main thread, and on GTK that is the same thread the
+/// dialog needs in order to pump its own events, so blocking there deadlocks
+/// the whole window the moment you click Add Folder. Windows and macOS survive
+/// it because their native dialogs run their own message loop, which is why
+/// this only ever showed up on Linux.
+///
+/// As an async command this runs on a worker thread, the dialog is opened
+/// without blocking, and the result comes back over a channel.
 #[tauri::command]
-fn pv_pick_folder(app: tauri::AppHandle) -> Option<String> {
-    app.dialog()
-        .file()
-        .blocking_pick_folder()
+async fn pv_pick_folder(app: tauri::AppHandle) -> Option<String> {
+    let (tx, rx) = std::sync::mpsc::channel();
+    app.dialog().file().pick_folder(move |picked| {
+        let _ = tx.send(picked);
+    });
+    rx.recv()
+        .ok()
+        .flatten()
         .and_then(|p| p.into_path().ok())
         .map(|p| p.to_string_lossy().to_string())
 }
@@ -51,7 +65,7 @@ fn to_ms(t: std::time::SystemTime) -> u64 {
 /// lowercase directory names to prune, matching the browser build's skip list.
 /// `max` guards against a mistakenly selected drive root.
 #[tauri::command]
-fn pv_walk(root: String, skip: Vec<String>, max: Option<usize>) -> Result<WalkResult, String> {
+async fn pv_walk(root: String, skip: Vec<String>, max: Option<usize>) -> Result<WalkResult, String> {
     let base = PathBuf::from(&root);
     if !base.is_dir() {
         return Err(format!("Not a folder: {}", root));
@@ -134,14 +148,14 @@ fn joined(root: &str, rel: &str) -> Result<PathBuf, String> {
 
 /// Whole file as raw bytes. Returned as an ArrayBuffer, not a JSON number array.
 #[tauri::command]
-fn pv_read(root: String, rel: String) -> Result<Response, String> {
+async fn pv_read(root: String, rel: String) -> Result<Response, String> {
     let p = joined(&root, &rel)?;
     fs::read(&p).map(Response::new).map_err(|e| e.to_string())
 }
 
 /// A byte range, so a 200 MB archive can be indexed by reading only its tail.
 #[tauri::command]
-fn pv_read_range(root: String, rel: String, start: u64, len: u64) -> Result<Response, String> {
+async fn pv_read_range(root: String, rel: String, start: u64, len: u64) -> Result<Response, String> {
     let p = joined(&root, &rel)?;
     let mut f = fs::File::open(&p).map_err(|e| e.to_string())?;
     let total = f.metadata().map_err(|e| e.to_string())?.len();
@@ -164,7 +178,7 @@ fn pv_read_range(root: String, rel: String, start: u64, len: u64) -> Result<Resp
 }
 
 #[tauri::command]
-fn pv_stat(root: String, rel: String) -> Result<Option<Entry>, String> {
+async fn pv_stat(root: String, rel: String) -> Result<Option<Entry>, String> {
     let p = joined(&root, &rel)?;
     match fs::metadata(&p) {
         Ok(md) if md.is_file() => Ok(Some(Entry {
@@ -181,7 +195,7 @@ fn pv_stat(root: String, rel: String) -> Result<Option<Entry>, String> {
 }
 
 #[tauri::command]
-fn pv_write(root: String, rel: String, data: Vec<u8>) -> Result<(), String> {
+async fn pv_write(root: String, rel: String, data: Vec<u8>) -> Result<(), String> {
     let p = joined(&root, &rel)?;
     if let Some(parent) = p.parent() {
         fs::create_dir_all(parent).map_err(|e| e.to_string())?;
@@ -190,7 +204,7 @@ fn pv_write(root: String, rel: String, data: Vec<u8>) -> Result<(), String> {
 }
 
 #[tauri::command]
-fn pv_remove(root: String, rel: String) -> Result<(), String> {
+async fn pv_remove(root: String, rel: String) -> Result<(), String> {
     let p = joined(&root, &rel)?;
     fs::remove_file(&p).map_err(|e| e.to_string())
 }
@@ -198,7 +212,7 @@ fn pv_remove(root: String, rel: String) -> Result<(), String> {
 /// Move within the same root. Falls back to copy-then-delete when the source
 /// and destination are on different filesystems.
 #[tauri::command]
-fn pv_move(root: String, from: String, to: String) -> Result<(), String> {
+async fn pv_move(root: String, from: String, to: String) -> Result<(), String> {
     let src = joined(&root, &from)?;
     let dst = joined(&root, &to)?;
     if let Some(parent) = dst.parent() {
@@ -218,7 +232,7 @@ fn pv_move(root: String, from: String, to: String) -> Result<(), String> {
 }
 
 #[tauri::command]
-fn pv_exists(root: String, rel: String) -> Result<bool, String> {
+async fn pv_exists(root: String, rel: String) -> Result<bool, String> {
     Ok(joined(&root, &rel)?.exists())
 }
 
@@ -252,7 +266,7 @@ pub struct ExtractResult {
 /// fragile in the browser build. Paths from the archive are sanitised before
 /// anything is written.
 #[tauri::command]
-fn pv_extract(root: String, archive_rel: String, dest_rel: String) -> Result<ExtractResult, String> {
+async fn pv_extract(root: String, archive_rel: String, dest_rel: String) -> Result<ExtractResult, String> {
     let src = joined(&root, &archive_rel)?;
     let dest = joined(&root, &dest_rel)?;
     let file = fs::File::open(&src).map_err(|e| e.to_string())?;
@@ -333,7 +347,7 @@ fn pv_extract(root: String, archive_rel: String, dest_rel: String) -> Result<Ext
 /// Confirm a stored root still exists, so a disconnected share is reported
 /// rather than looking like an empty folder.
 #[tauri::command]
-fn pv_root_ok(root: String) -> bool {
+async fn pv_root_ok(root: String) -> bool {
     Path::new(&root).is_dir()
 }
 
