@@ -373,7 +373,7 @@ table.t .num{font-family:var(--mono);text-align:right;font-size:12px}
  * Copyright (C) 2026 magikh0e
  * License: GPL-3.0-or-later (https://www.gnu.org/licenses/gpl-3.0.html)
  */
-const APP_VERSION = '0.2.2';
+const APP_VERSION = '0.2.3';
 
 /* ============================================================
    U — utilities
@@ -468,13 +468,15 @@ const I = (function(){
 /* ============================================================
    DB — IndexedDB wrapper (stores + keyval meta)
    ============================================================ */
-const STORES = ['meta','roots','files','models','prints','filaments','printers','queue','thumbs'];
+/* 'parked' holds model metadata from a backup that has nothing to attach to
+   yet, because the folder hasn't been added or scanned. Scanning claims it. */
+const STORES = ['meta','roots','files','models','prints','filaments','printers','queue','thumbs','parked'];
 const DB = {
   _db:null,
   open(){
     if(DB._db) return Promise.resolve(DB._db);
     return new Promise((res,rej)=>{
-      const req = indexedDB.open('printvault', 1);
+      const req = indexedDB.open('printvault', 2);
       req.onupgradeneeded = e=>{
         const db = e.target.result;
         STORES.forEach(name=>{
@@ -536,7 +538,7 @@ const DB = {
    Store — in-memory mirror + settings + subscribers
    ============================================================ */
 const Store = {
-  roots:[], models:[], files:[], prints:[], filaments:[], printers:[], queue:[],
+  roots:[], models:[], files:[], prints:[], filaments:[], printers:[], queue:[], parked:[],
   settings:{
     theme:'dark', view:'grid', sort:'name', dir:'asc', sidebar:true,
     hashOnScan:false, thumbOnScan:true, thumbSize:320, currency:'$',
@@ -550,12 +552,13 @@ const Store = {
   async load(){
     const meta = await DB.get('meta','settings');
     if(meta && meta.v) Object.assign(Store.settings, meta.v);
-    const [roots,models,files,prints,filaments,printers,queue] = await Promise.all([
+    const [roots,models,files,prints,filaments,printers,queue,parked] = await Promise.all([
       DB.all('roots'), DB.all('models'), DB.all('files'), DB.all('prints'),
-      DB.all('filaments'), DB.all('printers'), DB.all('queue')
+      DB.all('filaments'), DB.all('printers'), DB.all('queue'), DB.all('parked')
     ]);
     Store.roots=roots; Store.models=models; Store.files=files;
     Store.prints=prints; Store.filaments=filaments; Store.printers=printers; Store.queue=queue;
+    Store.parked=parked;
     Store.reindex();
   },
   reindex(){
@@ -1629,6 +1632,101 @@ function imageScore(name){
 }
 
 /* ============================================================
+   Meta — the stuff you typed, kept apart from the stuff on disk
+
+   Tags, collections, notes and ratings belong to a model, but a model's id
+   is built from a root id that's generated fresh every time a folder is
+   added. Tying metadata to that id means a backup only restores into the
+   library it came from. So an import parks its metadata by folder name and
+   relative path instead, and both importing and scanning try to claim it.
+   Restore first or scan first, either order works.
+   ============================================================ */
+const Meta = {
+  FIELDS: ['tags','collections','source','creator','license','notes','rating','favorite'],
+  norm(s){ return String(s==null?'':s).replace(/\\/g,'/').replace(/^\/+|\/+$/g,'').trim().toLowerCase(); },
+  key(rootName, path){ return Meta.norm(rootName)+'|'+Meta.norm(path); },
+
+  /* worth keeping? blank metadata isn't worth parking or applying */
+  any(m){
+    return !!((m.tags||[]).length || (m.collections||[]).length || m.notes ||
+              m.rating || m.favorite || m.source || m.creator || m.license);
+  },
+
+  /* Only fills blanks. If you've tagged something since the backup, importing
+     an older one shouldn't quietly undo that. */
+  apply(model, meta){
+    let hit = false;
+    for(const f of Meta.FIELDS){
+      const v = meta[f];
+      if(v == null || v === '' || v === false || v === 0) continue;
+      if(Array.isArray(v)){
+        const cur = model[f] || [];
+        const add = v.filter(x=>!cur.includes(x));
+        if(!add.length) continue;
+        model[f] = cur.concat(add);
+      } else {
+        if(model[f]) continue;
+        model[f] = v;
+      }
+      hit = true;
+    }
+    return hit;
+  },
+
+  async park(entries){
+    const recs = [];
+    for(const e of entries){
+      if(!Meta.any(e)) continue;
+      const rec = {id: Meta.key(e.rootName, e.path), rootName:e.rootName||'', path:e.path||'',
+                   name:e.name||'', base:U.base(e.path||''), parkedAt:Date.now()};
+      Meta.FIELDS.forEach(f=>{ if(e[f] != null) rec[f] = e[f]; });
+      recs.push(rec);
+    }
+    if(!recs.length) return 0;
+    await DB.putMany('parked', recs);
+    const byId = new Map(Store.parked.map(p=>[p.id,p]));
+    recs.forEach(r=>byId.set(r.id, r));
+    Store.parked = Array.from(byId.values());
+    return recs.length;
+  },
+
+  /* Hand parked metadata to whichever models can take it. Tries the folder
+     name and path first, then the path alone in case the folder was renamed,
+     then the model's own folder or file name. Anything ambiguous is left
+     parked rather than guessed at. */
+  async adopt(models){
+    if(!Store.parked.length || !models || !models.length) return 0;
+    const byKey = new Map(), byPath = new Map(), byBase = new Map();
+    const add = (map, k, m)=>{ if(!k || k === '|') return;
+      map.set(k, map.has(k) ? null : m); };   // null marks "more than one, can't tell"
+    for(const m of models){
+      const rn = (Store.root(m.rootId)||{}).name || '';
+      add(byKey, Meta.key(rn, m.path), m);
+      add(byPath, Meta.norm(m.path), m);
+      add(byBase, Meta.norm(U.base(m.path)), m);
+    }
+    const taken = new Set(), claimed = [], touched = new Map();
+    for(const p of Store.parked){
+      const m = byKey.get(p.id) || byPath.get(Meta.norm(p.path)) || byBase.get(Meta.norm(p.base));
+      if(!m || taken.has(m.id)) continue;
+      taken.add(m.id); claimed.push(p.id);
+      if(Meta.apply(m, p)) touched.set(m.id, m);
+    }
+    if(!claimed.length) return 0;
+    for(const m of touched.values()) await Store.put('models', m);
+    await DB.delMany('parked', claimed);
+    const gone = new Set(claimed);
+    Store.parked = Store.parked.filter(p=>!gone.has(p.id));
+    return claimed.length;
+  },
+
+  async clear(){
+    await DB.clear('parked');
+    Store.parked = [];
+  }
+};
+
+/* ============================================================
    Scan — index folders into models + files
    ============================================================ */
 const Scan = {
@@ -2007,6 +2105,10 @@ const Scan = {
     if(goneModels.length) await DB.delMany('models', goneModels);
     Store.models = Store.models.filter(m=>m.rootId !== root.id).concat(models);
     Store.reindex();
+
+    // metadata from a backup restored before this folder existed
+    const adopted = await Meta.adopt(models);
+    if(adopted) Toast.ok('Restored tags and notes for '+adopted+' model'+(adopted===1?'':'s')+' from your backup');
 
     /* --- 6. source URLs from readme-ish files --- */
     const needSrc = models.filter(m=>!m.source);
@@ -4133,14 +4235,19 @@ const Settings = {
     h += '<div class="panel"><h3>'+I.dl+' Backup</h3>'+
       '<p style="color:var(--dim);font-size:12.5px;line-height:1.65;margin:0 0 12px">Exports your tags, notes, ratings, print history, filament, printers and queue as JSON. '+
       'Preview images are not included, since they regenerate.</p>'+
-      '<div class="note">Print history, filament, printers and the queue restore on their own. Tags and notes '+
-      'attach to files on disk, so <b>add the folder and scan it before importing</b>, otherwise there is nothing '+
-      'for them to attach to. Matching is by folder name and path, so a renamed or re-added folder still works.</div>'+
+      '<div class="note">Restores onto a fresh install or a second machine. Print history, filament, printers '+
+      'and the queue come back straight away. Tags, collections and notes belong to files, so they attach by '+
+      'folder name and path, either to what you already have indexed or to the next folder you scan. '+
+      'Import and scan in whichever order suits you.</div>'+
       '<div style="display:flex;gap:8px;flex-wrap:wrap">'+
         '<button class="b p" onclick="PV.Settings.exportJSON()">'+I.dl+' Export backup</button>'+
         '<button class="b" onclick="PV.Settings.importJSON()">'+I.up+' Import backup</button>'+
         '<button class="b" onclick="PV.Settings.exportCSV()">'+I.dl+' Prints as CSV</button>'+
-      '</div></div>';
+      '</div>'+
+      (Store.parked.length ? '<div class="note" style="margin:12px 0 0">Tags and notes for <b>'+Store.parked.length+
+        '</b> model'+(Store.parked.length===1?'':'s')+' are waiting for a folder that has not been scanned yet. '+
+        'They attach on the next scan. <a href="#" onclick="PV.Settings.dropParked();return false">Discard them</a></div>' : '')+
+      '</div>';
 
     h += '<div class="panel" style="border-color:rgba(255,96,96,.35)"><h3 style="color:var(--bad)">'+I.warn+' Danger zone</h3>'+
       '<p style="color:var(--dim);font-size:12.5px;line-height:1.65;margin:0 0 12px">These only affect the PrintVault '+
@@ -4207,9 +4314,13 @@ const Settings = {
       app:'PrintVault', version:APP_VERSION, exportedAt:new Date().toISOString(),
       settings: Store.settings,
       roots: Store.roots.map(r=>({id:r.id, name:r.name, addedAt:r.addedAt, lastScan:r.lastScan})),
-      models: Store.models.map(m=>({id:m.id, rootId:m.rootId, path:m.path, name:m.name, tags:m.tags,
+      // rootName travels with each model: root ids are local to one install,
+      // the folder name and relative path are what identify it anywhere else
+      models: Store.models.map(m=>({id:m.id, rootId:m.rootId, rootName:(Store.root(m.rootId)||{}).name||'',
+        path:m.path, name:m.name, tags:m.tags,
         collections:m.collections, source:m.source, creator:m.creator, license:m.license, notes:m.notes,
         rating:m.rating, favorite:m.favorite, createdAt:m.createdAt})),
+      parked: Store.parked,   // metadata still waiting for a folder, don't lose it
       prints: Store.prints, filaments: Store.filaments, printers: Store.printers, queue: Store.queue
     };
     U.download('printvault-backup-'+U.today()+'.json',
@@ -4246,50 +4357,43 @@ const Settings = {
         'Adds <b>'+(data.prints||[]).length+'</b> prints, <b>'+(data.filaments||[]).length+'</b> spools, and metadata for <b>'+
         (data.models||[]).length+'</b> models. Existing entries with the same id are overwritten; nothing is deleted.',
         async ()=>{
-          // Model ids embed a randomly generated root id, so a backup can only
-          // match by id if that exact root record still exists. Re-add the
-          // folder or restore on another machine and nothing lines up. Map the
-          // backup's roots onto the current ones by name first, then match on
-          // the relative path, which is what actually identifies a model.
-          const rootMap = {};
-          const backupRoots = data.roots || [];
-          for(const br of backupRoots){
-            const byName = Store.roots.find(r=>r.name === br.name);
-            if(byName) rootMap[br.id] = byName.id;
-          }
-          // one root either side and no name match: it was almost certainly renamed
-          if(!Object.keys(rootMap).length && backupRoots.length === 1 && Store.roots.length === 1)
-            rootMap[backupRoots[0].id] = Store.roots[0].id;
+          const rootName = {};
+          (data.roots||[]).forEach(r=>{ rootName[r.id] = r.name; });
 
-          let mm = 0, missed = 0;
-          for(const m of (data.models||[])){
-            const mapped = rootMap[m.rootId];
-            const cur = Store.model(m.id) || (mapped ? Store.model(mapped + '::' + m.path) : null);
-            if(cur){
-              Object.assign(cur, {tags:m.tags||[], collections:m.collections||[], source:m.source||'',
-                creator:m.creator||'', license:m.license||'', notes:m.notes||'', rating:m.rating||0, favorite:!!m.favorite});
-              await Store.put('models', cur); mm++;
-            } else missed++;
-          }
+          // Park everything by folder name and path, then let it find its
+          // models. Nothing is thrown away for want of a match: whatever
+          // can't land now waits in the database for the next scan.
+          const bm = (data.models||[]).concat(data.parked||[]);
+          await Meta.park(bm.map(m=>Object.assign(
+            {rootName:m.rootName||rootName[m.rootId]||'', path:m.path, name:m.name},
+            Meta.FIELDS.reduce((o,f)=>(o[f]=m[f], o), {}))));
+
           for(const k of ['prints','filaments','printers','queue']){
             for(const x of (data[k]||[])) await Store.put(k, x);
           }
           if(data.settings) { Object.assign(Store.settings, data.settings); await Store.saveSettings(); }
+
+          const mm = await Meta.adopt(Store.models);
           Modal.close(); applyTheme(); UI.render();
 
           const other = (data.prints||[]).length + (data.filaments||[]).length +
                         (data.printers||[]).length + (data.queue||[]).length;
-          if(mm === 0 && missed > 0){
-            Toast.err('Restored '+other+' prints, spools, printers and queue entries, but none of the '+
-              missed+' models matched anything in your library. Model tags and notes attach to files on disk, '+
-              'so add the folder and scan it first, then import again.', 9000);
-          } else {
-            Toast.ok('Imported. Matched '+mm+' of '+(data.models||[]).length+' models'+
-              (missed ? ', '+missed+' had no match yet' : '')+'.');
-          }
+          const held = Store.parked.length;
+          if(mm) Toast.ok('Imported '+other+' records and restored metadata for '+mm+' model'+(mm===1?'':'s')+
+                          (held ? '. '+held+' more will attach when you scan.' : '.'));
+          else if(held) Toast.err('Imported '+other+' prints, spools, printers and queue entries. Tags and notes for '+
+                          held+' models are saved and waiting: add the folder and scan it, and they will attach themselves.', 9000);
+          else Toast.ok('Imported '+other+' records.');
         }, 'Import');
     };
     inp.click();
+  },
+
+  dropParked(){
+    Modal.confirm('Discard waiting metadata?',
+      'Throws away tags, collections and notes for <b>'+Store.parked.length+'</b> models that came from a backup '+
+      'and have not found their files yet. Import the backup again to bring them back.',
+      async ()=>{ await Meta.clear(); Modal.close(); UI.render(); Toast.ok('Discarded'); }, 'Discard', true);
   },
 
   clearIndex(){
@@ -4390,7 +4494,7 @@ async function checkPerms(){
   }
 })();
 
-window.PV = {U, I, DB, Store, Toast, Prog, Modal, FS, Scan, Render, Thumbs, Work,
+window.PV = {U, I, DB, Store, Toast, Prog, Modal, FS, Scan, Meta, Render, Thumbs, Work,
   UI, Library, Detail, Viewer, Archive, Prints, Filament, Queue, Dupes, Stats, Settings, APP_VERSION};
 
 

@@ -68,6 +68,12 @@ There's filament tracking by what's actually left on the spool, and a print
 queue that adds up grams and hours so you know whether you can finish
 something before you start it.
 
+Everything you type, meaning tags, collections, notes and ratings, exports to
+a JSON backup that restores anywhere. It matches on folder name and relative
+path rather than internal ids, so moving to a new machine or re-adding the
+folder still finds everything. Restore before you scan and the metadata waits
+in the database until the files show up.
+
 No account, nothing uploaded, no server involved.
 
 ## How it's put together
