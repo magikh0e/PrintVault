@@ -88,10 +88,19 @@ which. No build step, no bundler, no dependencies.
 
 ## Self-hosting the web version
 
-Serve the folder over `https` or `http://localhost` and open
-`index.html`. It won't work from a `file://` path, because browsers only hand
-out folder access in a secure context. Chromium only for the folder part
-(Chrome, Edge, Brave, Opera), since Firefox and Safari don't implement the API.
+It's one file, so any static web server will do. From the folder containing
+`index.html`:
+
+```bash
+python -m http.server 8000
+```
+
+Then open http://localhost:8000/. Any other port is fine if that one's taken.
+
+It has to be served, not opened directly. A `file://` path won't work, because
+browsers only hand out folder access in a secure context, meaning `https` or
+`localhost`. Chromium only for the folder part (Chrome, Edge, Brave, Opera),
+since Firefox and Safari don't implement the API.
 
 ## Building the desktop app
 
