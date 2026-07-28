@@ -1,0 +1,35 @@
+[package]
+name = "printvault-desktop"
+version = "0.2.0"
+description = "PrintVault desktop client"
+authors = ["magikh0e"]
+edition = "2021"
+rust-version = "1.77"
+license = "GPL-3.0-or-later"
+
+# App logic lives in a library crate so main.rs stays a thin shim, matching the
+# layout used by the Open Relay desktop build.
+[lib]
+name = "printvault_desktop_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tauri-plugin-dialog = "2"
+tauri-plugin-opener = "2"
+# Recursive directory walking. The whole point of the desktop build is that one
+# call returns the full listing instead of a browser round trip per file.
+walkdir = "2"
+# Archive extraction happens here rather than in JS, so entry bytes never cross
+# the IPC bridge. Also covers compression methods the browser cannot inflate.
+zip = { version = "2", default-features = false, features = ["deflate", "bzip2", "zstd"] }
+
+[profile.release]
+opt-level = "s"     # a webview shell, not a hot loop
+lto = true
+strip = true

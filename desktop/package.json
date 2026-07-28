@@ -1,0 +1,16 @@
+{
+  "name": "printvault-desktop",
+  "private": true,
+  "version": "0.2.0",
+  "type": "module",
+  "description": "PrintVault desktop client (Tauri shell around the single-file app)",
+  "scripts": {
+    "prepare-dist": "node build.mjs",
+    "tauri": "tauri",
+    "tauri:dev": "tauri dev",
+    "tauri:build": "tauri build"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2"
+  }
+}
