@@ -35,9 +35,9 @@ project does. Windows SmartScreen will want "More info" then "Run anyway", and
 macOS will want a right-click then Open the first time. If that bothers you,
 build it yourself from source below; it's the same thing.
 
-Windows has been tested against a real library. macOS and Linux build cleanly
-in CI but nobody has run them against a folder yet, so treat those as untested
-and tell me if something breaks.
+Windows and Linux have both been run against a real library, Linux on Ubuntu.
+macOS builds cleanly in CI but nobody has pointed it at a folder yet, so treat
+that one as untested and tell me if something breaks.
 
 ## What it does
 
