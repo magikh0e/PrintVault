@@ -2696,7 +2696,7 @@ checksum = "925383efa346730478fb4838dbe9137d2a47675ad789c546d150a6e1dd4ab31c"
 
 [[package]]
 name = "printvault-desktop"
-version = "0.2.6"
+version = "0.2.8"
 dependencies = [
  "reqwest 0.12.28",
  "serde",

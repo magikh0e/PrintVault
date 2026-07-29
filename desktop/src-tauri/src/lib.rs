@@ -532,6 +532,90 @@ async fn pv_printer_send(
     Ok(name)
 }
 
+
+#[derive(Serialize)]
+pub struct JobStatus {
+    state: String,      // printing | paused | complete | cancelled | standby | error | offline
+    filename: String,
+    progress: f64,      // 0..1
+    elapsed_s: f64,
+    remaining_s: f64,
+    filament_mm: f64,
+    message: String,
+}
+
+/// What the printer is doing right now.
+///
+/// Deliberately forgiving: a printer that is off, asleep or mid-reboot is a
+/// normal state to be in, not an error worth shouting about, so anything
+/// unreachable comes back as "offline".
+#[tauri::command]
+async fn pv_printer_status(addr: String, flavour: String, api_key: Option<String>) -> JobStatus {
+    let offline = |msg: &str| JobStatus {
+        state: "offline".into(), filename: String::new(), progress: 0.0,
+        elapsed_s: 0.0, remaining_s: 0.0, filament_mm: 0.0, message: msg.into(),
+    };
+    let base = base_url(&addr);
+    let c = match client() { Ok(c) => c, Err(e) => return offline(&e) };
+
+    if flavour == "octoprint" {
+        let mut req = c.get(format!("{}/api/job", base));
+        if let Some(k) = api_key.as_deref().filter(|k| !k.is_empty()) {
+            req = req.header("X-Api-Key", k);
+        }
+        let r = match req.send().await { Ok(r) => r, Err(e) => return offline(&e.to_string()) };
+        let v: serde_json::Value = match r.json().await { Ok(v) => v, Err(e) => return offline(&e.to_string()) };
+        let st = v["state"].as_str().unwrap_or("").to_lowercase();
+        return JobStatus {
+            state: if st.contains("printing") { "printing".into() }
+                   else if st.contains("paused") { "paused".into() }
+                   else if st.contains("operational") { "standby".into() }
+                   else if st.contains("error") { "error".into() }
+                   else { st },
+            filename: v["job"]["file"]["name"].as_str().unwrap_or("").to_string(),
+            progress: v["progress"]["completion"].as_f64().unwrap_or(0.0) / 100.0,
+            elapsed_s: v["progress"]["printTime"].as_f64().unwrap_or(0.0),
+            remaining_s: v["progress"]["printTimeLeft"].as_f64().unwrap_or(0.0),
+            filament_mm: v["job"]["filament"]["tool0"]["length"].as_f64().unwrap_or(0.0),
+            message: String::new(),
+        };
+    }
+
+    let url = format!(
+        "{}/printer/objects/query?print_stats&display_status&virtual_sdcard",
+        base
+    );
+    let r = match c.get(url).send().await { Ok(r) => r, Err(e) => return offline(&e.to_string()) };
+    let v: serde_json::Value = match r.json().await { Ok(v) => v, Err(e) => return offline(&e.to_string()) };
+    let st = &v["result"]["status"];
+    let ps = &st["print_stats"];
+    let raw = ps["state"].as_str().unwrap_or("").to_lowercase();
+    let progress = st["display_status"]["progress"]
+        .as_f64()
+        .or_else(|| st["virtual_sdcard"]["progress"].as_f64())
+        .unwrap_or(0.0);
+    let elapsed = ps["print_duration"].as_f64().unwrap_or(0.0);
+    // Klipper reports elapsed but not remaining, so it is inferred from progress
+    let remaining = if progress > 0.02 { (elapsed / progress) - elapsed } else { 0.0 };
+    JobStatus {
+        state: match raw.as_str() {
+            "printing" => "printing".into(),
+            "paused" => "paused".into(),
+            "complete" => "complete".into(),
+            "cancelled" => "cancelled".into(),
+            "standby" => "standby".into(),
+            "error" => "error".into(),
+            other => other.to_string(),
+        },
+        filename: ps["filename"].as_str().unwrap_or("").to_string(),
+        progress,
+        elapsed_s: elapsed,
+        remaining_s: remaining.max(0.0),
+        filament_mm: ps["filament_used"].as_f64().unwrap_or(0.0),
+        message: ps["message"].as_str().unwrap_or("").to_string(),
+    }
+}
+
 static APP: std::sync::OnceLock<tauri::AppHandle> = std::sync::OnceLock::new();
 
 /// Ask the release manifest whether a newer signed build exists, and offer it.
@@ -593,6 +677,7 @@ pub fn run() {
             pv_pick_exe,
             pv_printer_probe,
             pv_printer_send,
+            pv_printer_status,
             pv_extract,
             pv_root_ok
         ])

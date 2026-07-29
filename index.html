@@ -270,6 +270,18 @@ table.t .num{font-family:var(--mono);text-align:right;font-size:12px}
 .pv-card:hover .t-edit{opacity:1}
 .t-edit:hover{color:var(--hot,var(--acc));background:var(--bg3)}
 .t-edit:focus-visible{opacity:1;outline:1px solid var(--acc)}
+.jobbar{position:fixed;left:0;right:0;bottom:0;z-index:60;background:var(--bg2);
+  border-top:1px solid var(--line);padding:6px 14px;display:flex;gap:18px;flex-wrap:wrap;
+  box-shadow:0 -6px 20px -12px rgba(0,0,0,.7)}
+.jobbar .jb{display:flex;align-items:center;gap:10px;font-size:12.5px;min-width:0}
+.jobbar .n{font-weight:700}
+.jobbar .f{color:var(--dim);max-width:260px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
+  font-family:var(--mono);font-size:11.5px}
+.jobbar .bar{width:120px;height:5px;background:var(--bg3);border-radius:3px;overflow:hidden}
+.jobbar .bar i{display:block;height:100%;background:var(--acc);transition:width .6s}
+.jobbar .pc{font-variant-numeric:tabular-nums;color:var(--dim)}
+.jobbar .lf{color:var(--dim2)}
+@media(max-width:700px){.jobbar .f{max-width:120px}.jobbar .bar{width:70px}}
 .filerow{display:flex;align-items:center;gap:9px;padding:7px 10px;background:var(--bg2);font-size:12.5px}
 .filerow:hover{background:var(--bg3)}
 .filerow svg{width:15px;height:15px;flex:0 0 auto;color:var(--dim2)}
@@ -382,7 +394,7 @@ table.t .num{font-family:var(--mono);text-align:right;font-size:12px}
  * Copyright (C) 2026 magikh0e
  * License: GPL-3.0-or-later (https://www.gnu.org/licenses/gpl-3.0.html)
  */
-const APP_VERSION = '0.2.7';
+const APP_VERSION = '0.2.8';
 
 /* ============================================================
    U — utilities
@@ -1552,6 +1564,19 @@ const BrowserFS = Object.assign({}, FSCommon, {
     await dir.removeEntry(U.base(path));
   },
 
+  /* Write a file into the root, creating folders as needed. */
+  async writeFile(rootId, path, blob){
+    const r = Store.root(rootId);
+    if(!r || !r.handle) throw new Error('Folder not connected');
+    if(!(await BrowserFS.ensure(r, 'readwrite'))) throw new Error('Write permission denied');
+    const segs = path.split('/').filter(Boolean);
+    const dir = segs.length > 1 ? await BrowserFS.mkdirp(r.handle, segs.slice(0, -1)) : r.handle;
+    const fh = await dir.getFileHandle(segs[segs.length-1], {create:true});
+    const w = await fh.createWritable();
+    await w.write(blob);
+    await w.close();
+  },
+
   /* Rename in place, staying in the same folder. */
   async renameFile(rootId, path, newName){
     const r = Store.root(rootId);
@@ -1642,6 +1667,10 @@ const DesktopFS = Object.assign({}, FSCommon, {
   async deleteFile(rootId, path){
     await DesktopFS._call('pv_remove', {root: DesktopFS._root(rootId), rel: path});
   },
+  async writeFile(rootId, path, blob){
+    const data = Array.from(new Uint8Array(await blob.arrayBuffer()));
+    await DesktopFS._call('pv_write', {root: DesktopFS._root(rootId), rel: path, data});
+  },
   async renameFile(rootId, path, newName){
     const root = DesktopFS._root(rootId);
     const to = (U.dir(path) ? U.dir(path) + '/' : '') + newName;
@@ -1670,6 +1699,9 @@ const DesktopFS = Object.assign({}, FSCommon, {
   },
   pickExe(){ return DesktopFS._call('pv_pick_exe'); },
   probePrinter(addr, apiKey){ return DesktopFS._call('pv_printer_probe', {addr, apiKey: apiKey||null}); },
+  printerStatus(p){
+    return DesktopFS._call('pv_printer_status', {addr: p.addr, flavour: p.flavour||'moonraker', apiKey: p.apiKey||null});
+  },
   sendToPrinter(rootId, path, p, start){
     return DesktopFS._call('pv_printer_send', {
       root: DesktopFS._root(rootId), rel: path,
@@ -2065,6 +2097,42 @@ const Scan = {
       recs.push(rec);
       oldFiles.delete(f.path);
     }
+    /* A photo or a readme dropped loose in a folder full of models has no
+       model of its own, and a model holding nothing printable is discarded,
+       so the file silently disappeared. Re-home those: to the model whose
+       loose file it is named after, or, failing that, to the only model in
+       that folder. Anything genuinely ambiguous is left where it was. */
+    {
+      const printableModels = new Set();
+      const perDir = new Map();
+      for(const r of recs){
+        if(!isPrintable(r.ext) && r.kind !== 'arch') continue;
+        printableModels.add(r.modelId);
+        const d = U.dir(r.path);
+        if(!perDir.has(d)) perDir.set(d, new Map());
+        // stem of a loose model file here -> the model it belongs to
+        if(U.dir(r.path) === d) perDir.get(d).set(U.stem(r.name).toLowerCase(), r.modelId);
+      }
+      const byDirModels = new Map();
+      for(const r of recs){
+        if(!printableModels.has(r.modelId)) continue;
+        const d = U.dir(r.path);
+        if(!byDirModels.has(d)) byDirModels.set(d, new Set());
+        byDirModels.get(d).add(r.modelId);
+      }
+      let rehomed = 0;
+      for(const r of recs){
+        if(printableModels.has(r.modelId)) continue;      // already lands somewhere real
+        if(isPrintable(r.ext) || r.kind === 'arch') continue;
+        const d = U.dir(r.path);
+        const byName = (perDir.get(d) || new Map()).get(U.stem(r.name).toLowerCase());
+        const only = byDirModels.get(d);
+        const target = byName || (only && only.size === 1 ? Array.from(only)[0] : null);
+        if(target && target !== r.modelId){ r.modelId = target; rehomed++; }
+      }
+      if(rehomed) console.info('[PrintVault] attached '+rehomed+' loose images/docs to a neighbouring model');
+    }
+
     const removedIds = Array.from(oldFiles.values()).map(f=>f.id);
 
     /* --- 3. persist the file list up front ---
@@ -2249,6 +2317,22 @@ const Scan = {
     }
 
     /* --- 7. thumbnails --- */
+    /* A photo of the finished print is better than a render of the mesh, so a
+       picture named cover, preview, thumb and so on takes over once you add
+       one. A cover you picked by hand is never overridden. */
+    const takeover = models.filter(m=>{
+      if(m.thumbSrc === 'user') return false;
+      const best = Store.modelFiles(m.id)
+        .filter(f=>f.kind === 'image' && imageScore(f.name) >= 100)
+        .sort((a,b)=>imageScore(b.name)-imageScore(a.name) || b.size-a.size)[0];
+      return best && m.thumbFile !== best.path;
+    });
+    if(takeover.length){
+      Prog.set('Using cover images ('+takeover.length+')', 0, takeover.length);
+      for(const m of takeover){ await Thumbs.del('tm'+m.id); m.thumbId = null; }
+      await Scan.thumbnails(takeover, true);
+      Thumbs._urls.clear();
+    }
     if(Store.settings.thumbOnScan) await Scan.thumbnails(models);
 
     /* --- 8. root stats --- */
@@ -2299,7 +2383,8 @@ const Scan = {
       try{
         const blob = await FS.read(m.rootId, imgs[0].path);
         const t = await imgThumb(blob, size);
-        if(t){ const id = 'tm'+m.id; await Thumbs.put(id, t); m.thumbId = id; m.thumbSrc = 'image'; return m; }
+        if(t){ const id = 'tm'+m.id; await Thumbs.put(id, t); m.thumbId = id; m.thumbSrc = 'image';
+          m.thumbFile = imgs[0].path; return m; }
       }catch(e){}
     }
 
@@ -2826,6 +2911,7 @@ const Detail = {
       '</div>'+
       '<div style="display:flex;gap:6px;margin-top:8px">'+
         (meshes.length ? '<button class="b sm" style="flex:1" onclick="PV.Viewer.open(\''+meshes[0].id+'\')">'+I.eye+' 3D view</button>' : '')+
+        '<button class="b sm" onclick="PV.Detail.addPhoto()" title="Add a photo of the print">'+I.img+'</button>'+
         '<button class="b sm" onclick="PV.Detail.regen()" title="Regenerate preview">'+I.refresh+'</button>'+
       '</div></div>';
 
@@ -3067,6 +3153,49 @@ const Detail = {
       }, 'Delete', true);
   },
 
+  /* Add a photo of the finished print. Copies it in beside the model and
+     makes it the cover straight away, so there is no rescan and no thinking
+     about where a file has to sit for the scanner to notice it. */
+  addPhoto(){
+    const m = Store.model(Detail.cur); if(!m) return;
+    const inp = document.createElement('input');
+    inp.type = 'file'; inp.accept = 'image/*';
+    inp.onchange = async ()=>{
+      const file = inp.files && inp.files[0]; if(!file) return;
+      const files = Store.modelFiles(m.id);
+      const isDir = !(files.length === 1 && files[0].path === m.path);
+      const ext = (U.ext(file.name) || 'jpg');
+      // a folder gets cover.jpg, a loose file gets one named after it, both of
+      // which the scanner will also recognise on its own later
+      const base = isDir ? 'cover' : U.stem(U.base(m.path));
+      const dir = isDir ? m.path : U.dir(m.path);
+      let name = base + '.' + ext, n = 2;
+      const taken = new Set(files.map(f=>U.base(f.path).toLowerCase()));
+      while(taken.has(name.toLowerCase())) name = base + '-' + (n++) + '.' + ext;
+      const path = (dir ? dir + '/' : '') + name;
+      try{
+        Toast.show('Adding '+name+'...');
+        await FS.writeFile(m.rootId, path, file);
+        const rec = {id: m.rootId+':'+path, rootId: m.rootId, modelId: m.id, path, name,
+          ext, kind: 'image', size: file.size, mtime: file.lastModified || Date.now()};
+        await Store.put('files', rec);
+        const t = await imgThumb(file, Store.settings.thumbSize);
+        if(t){
+          const id = 'tm'+m.id;
+          await Thumbs.put(id, t);
+          Thumbs._urls.delete(id);
+          m.thumbId = id; m.thumbSrc = 'user'; m.thumbFile = path;
+        }
+        m.fileCount = Store.modelFiles(m.id).length;
+        m.bytes = Store.modelFiles(m.id).reduce((a,f)=>a+(f.size||0), 0);
+        await Store.put('models', m);
+        UI.render(); Detail.open(m.id);
+        Toast.ok('Added '+name+(t ? ' and set it as the cover' : ''));
+      }catch(e){ Toast.err('Could not add the photo: '+e.message); }
+    };
+    inp.click();
+  },
+
   async setCover(fileId){
     const f = Store.file(fileId); if(!f) return;
     const m = Store.model(f.modelId); if(!m) return;
@@ -3077,7 +3206,7 @@ const Detail = {
       const id = 'tm'+m.id;
       await Thumbs.put(id, t);
       Thumbs._urls.delete(id);
-      m.thumbId = id; m.thumbSrc = 'user';
+      m.thumbId = id; m.thumbSrc = 'user'; m.thumbFile = f.path;
       await Store.put('models', m);
       Toast.ok('Cover updated');
       Detail.open(m.id); UI.render();
@@ -3970,6 +4099,122 @@ const Send = {
   }
 };
 
+/* ============================================================
+   Monitor — watch a print and write the log when it finishes
+
+   A print history you have to remember to fill in is a print history you
+   stop filling in. Once a printer has a network address, the job it is
+   running can be read directly, so the log gets written with the real
+   duration and the real filament used rather than the slicer's guess.
+   ============================================================ */
+const Monitor = {
+  every: 20000,
+  _timer: null,
+  state: {},          // printerId -> last status seen
+  _job: {},           // printerId -> what we think is running
+
+  start(){
+    if(!FS.printerStatus) return;                 // browser build
+    if(Monitor._timer) return;
+    if(!Store.printers.some(p=>p.addr)) return;
+    Monitor.tick();
+    Monitor._timer = setInterval(Monitor.tick, Monitor.every);
+  },
+  stop(){ if(Monitor._timer){ clearInterval(Monitor._timer); Monitor._timer = null; } },
+
+  async tick(){
+    const printers = Store.printers.filter(p=>p.addr);
+    if(!printers.length) return Monitor.stop();
+    for(const p of printers){
+      let st;
+      try{ st = await FS.printerStatus(p); }catch(e){ continue; }
+      const was = Monitor.state[p.id];
+      Monitor.state[p.id] = st;
+      if(st.state === 'printing' || st.state === 'paused'){
+        Monitor._job[p.id] = {filename: st.filename, elapsed: st.elapsed_s, filament: st.filament_mm};
+      }
+      // the moment it stops having been printing is the moment to log it
+      const finished = was && (was.state === 'printing' || was.state === 'paused') &&
+                       ['complete','standby','cancelled','error'].includes(st.state);
+      if(finished) await Monitor.finish(p, was, st);
+    }
+    if(UI.tab === 'queue' || UI.tab === 'prints') UI.render();
+    Monitor.paint();
+  },
+
+  /* Density is not reported, so grams come from the usual 1.24 g/cm3 for PLA
+     on a 1.75 mm filament. Close enough to be useful, and editable after. */
+  grams(mm){
+    const mm3 = mm * Math.PI * Math.pow(1.75/2, 2);
+    return Math.round((mm3 / 1000) * 1.24 * 10) / 10;
+  },
+
+  async finish(printer, was, now){
+    const job = Monitor._job[printer.id] || {};
+    const name = job.filename || was.filename || '';
+    if(!name) return;
+    const cancelled = now.state === 'cancelled' || now.state === 'error';
+    const elapsed = Math.max(was.elapsed_s || 0, job.elapsed || 0);
+    const mm = Math.max(was.filament_mm || 0, job.filament || 0);
+    const grams = Monitor.grams(mm);
+
+    // match the file back to a model by its name, since that is all the
+    // printer knows about it
+    const base = U.base(name).toLowerCase();
+    const file = Store.files.find(f=>f.name.toLowerCase() === base) ||
+                 Store.files.find(f=>U.stem(f.name).toLowerCase() === U.stem(base));
+    const model = file ? Store.model(file.modelId) : null;
+
+    const rec = {
+      id: U.id('pt'), modelId: model ? model.id : '', modelName: model ? model.name : U.stem(base),
+      date: U.today(), result: cancelled ? 'fail' : 'success',
+      printer: printer.name, grams: grams || null,
+      timeMin: elapsed ? Math.round(elapsed/60) : null,
+      material: '', notes: (cancelled ? 'Stopped early ('+now.state+')' : 'Logged automatically from '+printer.name)+
+        (now.message ? ': '+now.message : ''),
+      auto: true
+    };
+    await Store.put('prints', rec);
+
+    // take it off the spool if one is marked in use
+    const spool = Store.filaments.find(f=>f.inUse && (!f.printer || f.printer === printer.name));
+    if(spool && grams){
+      spool.remainingG = Math.max(0, (spool.remainingG || 0) - grams);
+      rec.filamentId = spool.id; rec.material = spool.material || '';
+      await Store.put('filaments', spool);
+      await Store.put('prints', rec);
+    }
+    delete Monitor._job[printer.id];
+    UI.render();
+    Toast.ok((cancelled ? 'Logged a stopped print' : 'Logged '+(model ? model.name : U.stem(base)))+
+      ' on '+printer.name+(grams ? ', '+grams+'g' : '')+(spool && grams ? ' off '+spool.brand+' '+spool.material : ''));
+  },
+
+  /* A single line at the top of the window while something is running. */
+  paint(){
+    const live = Object.entries(Monitor.state)
+      .filter(([id,st])=>st && (st.state === 'printing' || st.state === 'paused'));
+    let bar = document.getElementById('pvJob');
+    if(!live.length){ if(bar) bar.remove(); return; }
+    if(!bar){
+      bar = document.createElement('div');
+      bar.id = 'pvJob'; bar.className = 'jobbar';
+      document.body.appendChild(bar);
+    }
+    bar.innerHTML = live.map(([id,st])=>{
+      const p = Store.printer(id) || {name:'Printer'};
+      const pct = Math.round((st.progress||0)*100);
+      const left = st.remaining_s ? U.dur(Math.round(st.remaining_s/60))+' left' : '';
+      return '<div class="jb"><span class="n">'+U.esc(p.name)+'</span>'+
+        '<span class="f" title="'+U.attr(st.filename)+'">'+U.esc(U.base(st.filename))+'</span>'+
+        '<span class="bar"><i style="width:'+pct+'%"></i></span>'+
+        '<span class="pc">'+pct+'%</span>'+
+        (left ? '<span class="lf">'+U.esc(left)+'</span>' : '')+
+        (st.state === 'paused' ? '<span class="lf">paused</span>' : '')+'</div>';
+    }).join('');
+  }
+};
+
 const Queue = {
   render(v){
     const pending = U.sortBy(Store.queue.filter(q=>q.status!=='done'),
@@ -4107,6 +4352,106 @@ const Queue = {
 /* ============================================================
    Dupes — duplicate + cleanup finder
    ============================================================ */
+/* ============================================================
+   AutoTag — turn the folder tree into tags
+
+   A library that has been organised by hand already carries the information:
+   Figurines/Breaking Bad/Heisenberg says more than any tag anyone would sit
+   down and type. This proposes tags from each model's path and waits for you
+   to approve them, because guessing wrong silently would be worse than not
+   guessing at all.
+   ============================================================ */
+const AutoTag = {
+  // folder names that describe packaging rather than the thing itself
+  SKIP: new Set(['zips','zip','archive','archives','downloads','download','new folder','misc','other',
+    'stuff','things','temp','tmp','sorted','unsorted','to sort','to print','printed','done',
+    'printvault quarantine','quarantine']),
+
+  clean(seg){
+    let t = String(seg||'')
+      .replace(/[_+]+/g,' ')
+      .replace(/\s*-\s*\d{5,}\s*$/,'')          // trailing thingiverse-style ids
+      .replace(/\b\d{6,}\b/g,' ')                 // bare long numbers
+      .replace(/\b(stl|stls|3mf|gcode|files?|model_files|fan art|no ams|multiparts?)\b/gi,' ')
+      .replace(/\s+/g,' ').trim();
+    if(t.length < 3 || t.length > 28) return '';
+    if(/^\d+$/.test(t)) return '';
+    if(AutoTag.SKIP.has(t.toLowerCase())) return '';
+    const q = (Store.settings.quarantineDir||'').replace(/[_+]+/g,' ').trim().toLowerCase();
+    if(q && t.toLowerCase() === q) return '';
+    return t.replace(/\b\w/g, c=>c.toUpperCase());
+  },
+
+  /* Tags for one model: the folders above it, nearest first, minus the
+     model's own folder, which is usually just the model name again. */
+  forModel(m){
+    const segs = U.dir(m.path).split('/').filter(Boolean);
+    const out = [];
+    for(const seg of segs){
+      if(GENERIC_DIRS.has(seg.toLowerCase())) continue;
+      const t = AutoTag.clean(seg);
+      if(t && !out.includes(t)) out.push(t);
+    }
+    return out.slice(0, 3);
+  },
+
+  propose(){
+    const rows = [];
+    for(const m of Store.models){
+      const have = new Set((m.tags||[]).map(t=>t.toLowerCase()));
+      const add = AutoTag.forModel(m).filter(t=>!have.has(t.toLowerCase()));
+      if(add.length) rows.push({id:m.id, name:m.name, path:m.path, add});
+    }
+    return rows;
+  },
+
+  open(){
+    const rows = AutoTag._rows = AutoTag.propose();
+    if(!rows.length) return Toast.ok('Nothing to suggest, every model already carries its folder names');
+    const counts = new Map();
+    rows.forEach(r=>r.add.forEach(t=>counts.set(t,(counts.get(t)||0)+1)));
+    const top = Array.from(counts.entries()).sort((a,b)=>b[1]-a[1]);
+
+    let h = '<p style="color:var(--dim);font-size:13px;line-height:1.65;margin:0 0 14px">'+
+      'Proposed from the folders each model sits in. Nothing is applied until you say so, and existing tags are kept.</p>'+
+      '<div style="margin-bottom:14px">'+top.slice(0,24).map(([t,n])=>
+        '<span class="tg" style="margin:0 4px 4px 0;display:inline-block">'+U.esc(t)+' <b style="color:var(--dim2)">'+n+'</b></span>').join('')+
+        (top.length>24?'<span style="color:var(--dim2);font-size:12px"> +'+(top.length-24)+' more</span>':'')+'</div>'+
+      '<div style="max-height:46vh;overflow:auto;border:1px solid var(--line);border-radius:8px">';
+    h += rows.map((r,i)=>'<label class="chk" style="display:flex;gap:10px;align-items:flex-start;padding:8px 10px;'+
+      'border-top:1px solid var(--line);margin:0">'+
+      '<input type="checkbox" checked data-at="'+i+'">'+
+      '<span style="flex:1;min-width:0"><b style="font-size:13px">'+U.esc(r.name)+'</b>'+
+      '<span style="display:block;margin-top:3px">'+r.add.map(t=>'<span class="tg">'+U.esc(t)+'</span>').join('')+'</span></span></label>').join('');
+    h += '</div>';
+
+    Modal.open('Suggest tags from folders ('+rows.length+' models)', h,
+      '<button class="b" onclick="PV.AutoTag.none()">Select none</button>'+
+      '<button class="b" onclick="PV.AutoTag.all()">Select all</button>'+
+      '<div class="sp"></div><button class="b" onclick="PV.Modal.back()">Cancel</button>'+
+      '<button class="b p" onclick="PV.AutoTag.apply()">Apply</button>');
+  },
+  all(){ document.querySelectorAll('#modal [data-at]').forEach(c=>c.checked=true); },
+  none(){ document.querySelectorAll('#modal [data-at]').forEach(c=>c.checked=false); },
+
+  async apply(){
+    const rows = AutoTag._rows || [];
+    const picked = Array.from(document.querySelectorAll('#modal [data-at]'))
+      .filter(c=>c.checked).map(c=>rows[+c.dataset.at]).filter(Boolean);
+    if(!picked.length) return Modal.back();
+    const upd = [];
+    for(const r of picked){
+      const m = Store.model(r.id); if(!m) continue;
+      const have = new Set((m.tags||[]).map(t=>t.toLowerCase()));
+      m.tags = (m.tags||[]).concat(r.add.filter(t=>!have.has(t.toLowerCase())));
+      upd.push(m);
+    }
+    for(const m of upd) await Store.put('models', m);
+    Modal.close(); UI.render();
+    Toast.ok('Tagged '+upd.length+' model'+(upd.length===1?'':'s'));
+  }
+};
+
 const Dupes = {
   mode:'exact',
   sel:new Set(),
@@ -4179,6 +4524,52 @@ const Dupes = {
     return out.sort((a,b)=>b.waste - a.waste);
   },
 
+  /* Models that are probably the same thing twice.
+
+     Hashing only catches byte-identical files, so a re-export or a second
+     download of the same model slips past: two copies of the same figure can
+     differ by a few thousand bytes and share nothing at the hash level. This
+     matches on the name instead, after stripping the noise that downloads
+     accumulate, and treats an obvious size gap as a hint rather than a rule. */
+  modelKey(m){
+    return String(m.name||'')
+      .toLowerCase()
+      .replace(/[_+]+/g,' ')
+      .replace(/\b(?:\d{6,}|[a-z0-9]{6}\d*)\b/g,' ')
+      .replace(/\b(?:copy|final|v\d+|fan art|no ams|multiparts?|stls?|3mf|gcode|files?|model files|remix|updated|new|old|\(\d+\))\b/g,' ')
+      .replace(/[^a-z0-9 ]+/g,' ')
+      .replace(/\s+/g,' ').trim();
+  },
+  modelGroups(){
+    const by = new Map();
+    for(const m of Store.models){
+      const k = Dupes.modelKey(m);
+      if(k.length < 4) continue;
+      if(!by.has(k)) by.set(k, []);
+      by.get(k).push(m);
+    }
+    const out = [];
+    by.forEach((list,k)=>{
+      if(list.length < 2) return;
+      const sorted = list.slice().sort((a,b)=>(b.bytes||0)-(a.bytes||0));
+      const waste = sorted.slice(1).reduce((s,m)=>s+(m.bytes||0), 0);
+      out.push({key:k, models:sorted, waste});
+    });
+    return out.sort((a,b)=>b.waste - a.waste);
+  },
+  async ignoreModel(id){
+    const m = Store.model(id); if(!m) return;
+    const r = Store.root(m.rootId); if(!r) return;
+    const files = Store.modelFiles(m.id);
+    const isDir = !(files.length === 1 && files[0].path === m.path);
+    const path = isDir ? m.path : U.dir(m.path);
+    if(!path) return Toast.err('Nothing sensible to ignore there');
+    r.excludes = (r.excludes||[]).concat([path]);
+    await Store.put('roots', r);
+    Toast.ok('Ignoring '+U.base(path)+', reindexing');
+    await Scan.run([r.id]);
+  },
+
   archives(){
     const dirs = new Set();
     Store.files.forEach(f=>{ let d = U.dir(f.path); while(d){ dirs.add(f.rootId+'|'+d.toLowerCase()); d = U.dir(d); } });
@@ -4193,6 +4584,7 @@ const Dupes = {
   render(v){
     const hashed = Store.files.filter(f=>f.sha).length;
     const exact = Dupes.groups(), similar = Dupes.nameGroups(), arch = Dupes.archives();
+    const dupModels = Dupes.modelGroups();
     const waste = exact.reduce((s,g)=>s+g.waste, 0);
     const archWaste = arch.reduce((s,f)=>s+f.size, 0);
 
@@ -4216,7 +4608,8 @@ const Dupes = {
       '</div>';
 
     h += '<div class="seg" style="margin-bottom:14px;width:fit-content">'+
-      [['exact','Exact ('+exact.length+')'],['similar','Same name ('+similar.length+')'],['arch','Archives ('+arch.length+')']]
+      [['exact','Exact ('+exact.length+')'],['similar','Same name ('+similar.length+')'],
+       ['models','Same model ('+dupModels.length+')'],['arch','Archives ('+arch.length+')']]
       .map(m=>'<button class="'+(Dupes.mode===m[0]?'on':'')+'" onclick="PV.Dupes.setMode(\''+m[0]+'\')">'+m[1]+'</button>').join('')+'</div>';
 
     if(Dupes.mode === 'exact'){
@@ -4237,6 +4630,30 @@ const Dupes = {
       else {
         h += '<div class="note"><b>Not verified.</b> These files share a filename and byte size, which usually means a copy, but only hashing proves it. Run <b>Hash files</b> to confirm before deleting anything.</div>';
         h += similar.slice(0,150).map(g=>Dupes.group(g, 'name')).join('');
+      }
+    } else if(Dupes.mode === 'models'){
+      if(!dupModels.length) h += '<div class="pv-empty">'+I.check+'<h3>No repeated models</h3>'+
+        '<p>Nothing looks like the same thing filed twice.</p></div>';
+      else {
+        h += '<div class="note">These look like the same model more than once, matched on the name rather than the bytes, '+
+          'so a re-export or a second download is caught where hashing would miss it. <b>Check before acting</b>: two '+
+          'genuinely different models can share a name. Ignoring one leaves the files on disk and simply stops indexing them.</div>';
+        h += dupModels.slice(0,120).map(g=>{
+          const rows = g.models.map((m,i)=>{
+            const r = Store.root(m.rootId)||{};
+            return '<div class="dupe-f">'+
+              '<span class="ext '+(i?'':'ok')+'">'+(i?'copy':'keep')+'</span>'+
+              '<span class="p" title="'+U.attr(m.path)+'">'+U.esc(r.name||'')+'/'+U.esc(m.path)+'</span>'+
+              '<span class="mono" style="color:var(--dim2);font-size:11px">'+(m.fileCount||0)+' file'+((m.fileCount===1)?'':'s')+' · '+U.bytes(m.bytes||0)+'</span>'+
+              '<button class="b g sm" onclick="PV.Detail.open(\''+m.id+'\')">Open</button>'+
+              (i ? '<button class="b g sm" onclick="PV.Dupes.ignoreModel(\''+m.id+'\')">Ignore</button>' : '')+
+              '</div>';
+          }).join('');
+          return '<div class="dupe"><div class="dupe-h"><b>'+U.esc(g.models[0].name)+'</b>'+
+            '<span class="hash">'+g.models.length+' copies</span><div class="sp"></div>'+
+            '<span class="hash">'+U.bytes(g.waste)+' in the extras</span></div>'+rows+'</div>';
+        }).join('');
+        if(dupModels.length > 120) h += '<div style="color:var(--dim2);font-size:12.5px;padding:8px">Showing 120 of '+dupModels.length+'.</div>';
       }
     } else {
       if(!arch.length) h += '<div class="pv-empty">'+I.check+'<h3>No leftover archives</h3><p>No zip or rar files sitting next to a folder of the same name.</p></div>';
@@ -4509,6 +4926,11 @@ const Settings = {
       (Store.roots.length?'<button class="b" onclick="PV.Scan.run()">'+I.refresh+' Rescan all</button>':'')+
       (Store.models.length?'<button class="b" onclick="PV.Settings.regenAll()">'+I.img+' Rebuild missing previews</button>':'')+'</div></div>';
 
+    h += '<div class="panel"><h3>'+I.tag+' Tags</h3>'+
+      '<p style="color:var(--dim);font-size:12.5px;line-height:1.65;margin:0 0 12px">Your folder names already say '+
+      'what things are. This proposes tags from them and shows you the list before anything is written.</p>'+
+      '<button class="b" onclick="PV.AutoTag.open()">'+I.tag+' Suggest tags from folders</button></div>';
+
     h += '<div class="panel"><h3>'+I.gear+' Scanning</h3>'+
       '<label class="chk"><input type="checkbox" id="sThumb"'+(s.thumbOnScan?' checked':'')+' onchange="PV.Settings.set(\'thumbOnScan\',this.checked)"> '+
         'Generate previews during scan <span style="color:var(--dim2)">(slower, but the library is browsable right away)</span></label>'+
@@ -4647,6 +5069,7 @@ const Settings = {
     });
     await Store.put('printers', p);
     Modal.close(); UI.render(); Toast.ok('Printer saved');
+    Monitor.start();
   },
   async testPrinter(){
     const el = document.getElementById('prTest');
@@ -4874,13 +5297,14 @@ async function checkPerms(){
   document.querySelectorAll('.pv-view').forEach(v=>v.classList.toggle('on', v.id === 'v-'+UI.tab));
   UI.render();
   checkPerms();
+  Monitor.start();
   if(!FS.supported || !FS.secure){
     document.getElementById('btnAddRoot').classList.add('hidden');
     document.getElementById('btnScan').classList.add('hidden');
   }
 })();
 
-window.PV = {U, I, DB, Store, Toast, Prog, Modal, FS, Scan, Meta, Send, Render, Thumbs, Work,
+window.PV = {U, I, DB, Store, Toast, Prog, Modal, FS, Scan, Meta, Send, AutoTag, Monitor, Render, Thumbs, Work,
   UI, Library, Detail, Viewer, Archive, Prints, Filament, Queue, Dupes, Stats, Settings, APP_VERSION};
 
 
