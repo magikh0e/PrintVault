@@ -262,6 +262,14 @@ table.t .num{font-family:var(--mono);text-align:right;font-size:12px}
 .dt-shots img:hover,.dt-shots img.on{border-color:var(--acc)}
 .filelist{display:flex;flex-direction:column;gap:1px;background:var(--line);border:1px solid var(--line);border-radius:var(--r);overflow:hidden}
 .b.ico.dgr:hover{color:var(--bad);border-color:rgba(255,96,96,.5)}
+.pv-meta .t-row{display:flex;align-items:flex-start;gap:4px}
+.pv-meta .t-row .t{flex:1;min-width:0}
+.t-edit{flex:none;background:none;border:0;padding:2px;color:var(--dim2);cursor:pointer;opacity:0;
+  transition:opacity .15s,color .15s;border-radius:5px}
+.t-edit svg{width:14px;height:14px;display:block}
+.pv-card:hover .t-edit{opacity:1}
+.t-edit:hover{color:var(--hot,var(--acc));background:var(--bg3)}
+.t-edit:focus-visible{opacity:1;outline:1px solid var(--acc)}
 .filerow{display:flex;align-items:center;gap:9px;padding:7px 10px;background:var(--bg2);font-size:12.5px}
 .filerow:hover{background:var(--bg3)}
 .filerow svg{width:15px;height:15px;flex:0 0 auto;color:var(--dim2)}
@@ -2613,7 +2621,8 @@ const Library = {
         '<button class="fav'+(m.favorite?' on':'')+'" onclick="event.stopPropagation();PV.Library.fav(\''+m.id+'\')" title="Favorite">'+I.star+'</button>'+
       '</div>'+
       '<div class="pv-meta">'+
-        '<div class="t">'+U.esc(m.name)+'</div>'+
+        '<div class="t-row"><div class="t">'+U.esc(m.name)+'</div>'+
+          '<button class="t-edit" title="Rename" onclick="event.stopPropagation();PV.Library.rename(\''+m.id+'\')">'+I.edit+'</button></div>'+
         (tags ? '<div class="pv-tags">'+tags+'</div>' : '')+
         '<div class="s"><span>'+m.fileCount+' file'+(m.fileCount===1?'':'s')+'</span>'+
           '<span>'+U.bytes(m.bytes)+'</span>'+
@@ -2649,6 +2658,13 @@ const Library = {
     m.favorite = !m.favorite;
     await Store.put('models', m);
     UI.render();
+  },
+  /* Renaming from the card, without opening the model first. Shares the
+     dialog with the detail view, which is why it sets Detail.cur. */
+  rename(id){
+    if(!Store.model(id)) return;
+    Detail.cur = id;
+    Detail.renameName(true);
   },
   setView(v){ Store.setting('view', v); UI.render(); },
   setSort(v){ Store.setting('sort', v); UI.render(); },
@@ -2773,7 +2789,9 @@ const Detail = {
     h += '<div>';
     h += '<div style="display:flex;align-items:flex-start;gap:10px;margin-bottom:2px">'+
       '<div style="flex:1;min-width:0"><h2 style="font-size:18px;line-height:1.3;word-break:break-word">'+U.esc(m.name)+'</h2>'+
-      '<div class="mono" style="color:var(--dim2);font-size:11.5px;margin-top:4px;word-break:break-all">'+U.esc(root.name||'')+'/'+U.esc(m.path)+'</div></div>'+
+      '<div class="mono" style="color:var(--dim2);font-size:11.5px;margin-top:4px;word-break:break-all">'+U.esc(root.name||'')+'/'+U.esc(m.path)+
+        '<button class="b g sm ico" style="margin-left:6px;vertical-align:-5px" title="Rename" '+
+        'onclick="PV.Detail.renameName()">'+I.edit+'</button></div></div>'+
       '<button class="b g ico" onclick="PV.Detail.fav()" title="Favorite" style="color:'+(m.favorite?'var(--warn)':'var(--dim2)')+'">'+I.star+'</button>'+
       '</div>';
 
@@ -2909,6 +2927,33 @@ const Detail = {
   /* Renaming or deleting changes what the scanner would group, and for a
      single loose file the filename IS the model name, so both finish by
      reindexing that folder rather than trying to patch the index by hand. */
+  /* Shortcut to the one field people change most. Edit has the rest. */
+  renameName(fromCard){
+    const m = Store.model(Detail.cur); if(!m) return;
+    Detail._renameFromCard = !!fromCard;
+    Modal.open('Rename',
+      '<div class="f"><label>Display name</label><input id="rnName2" value="'+U.attr(m.name)+'"></div>'+
+      '<div style="color:var(--dim2);font-size:12px;line-height:1.6">Changes only the name PrintVault shows. '+
+      'Nothing on disk is renamed.</div>',
+      '<button class="b" onclick="PV.Modal.back()">Cancel</button>'+
+      '<button class="b p" onclick="PV.Detail.saveName()">Save</button>');
+    setTimeout(()=>{ const i=document.getElementById('rnName2'); if(i){ i.focus(); i.select(); } }, 30);
+  },
+
+  async saveName(){
+    const m = Store.model(Detail.cur); if(!m) return;
+    const el = document.getElementById('rnName2');
+    const name = el ? el.value.trim() : '';
+    if(!name) return Toast.err('A name cannot be empty');
+    if(name === m.name) return Modal.back();
+    m.name = name;
+    await Store.put('models', m);
+    Modal.close(); UI.render();
+    // opened from a card, so stay in the library rather than diving into it
+    if(!Detail._renameFromCard) Detail.open(m.id);
+    Toast.ok('Renamed to '+name);
+  },
+
   renameFile(fileId){
     const f = Store.file(fileId); if(!f) return;
     Modal.open('Rename file',
