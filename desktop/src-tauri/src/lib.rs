@@ -104,8 +104,19 @@ async fn pv_walk(root: String, skip: Vec<String>, max: Option<usize>) -> Result<
                     Ok(m) => m,
                     Err(_) => continue,
                 };
+                // Join the real path components rather than replacing every
+                // backslash with a slash. On Windows the separator is a
+                // backslash so the two look the same, but on Linux a backslash
+                // is an ordinary character in a filename, and rewriting it
+                // split one file into a folder plus a file that does not
+                // exist. `a\b.zip` became `a/b.zip`, which then indexed as a
+                // model folder named `a` holding `b.zip`.
                 let rel = match e.path().strip_prefix(&base) {
-                    Ok(r) => r.to_string_lossy().replace('\\', "/"),
+                    Ok(r) => r
+                        .components()
+                        .map(|c| c.as_os_str().to_string_lossy().into_owned())
+                        .collect::<Vec<_>>()
+                        .join("/"),
                     Err(_) => continue,
                 };
                 files.push(Entry {
