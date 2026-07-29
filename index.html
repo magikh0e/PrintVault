@@ -261,6 +261,7 @@ table.t .num{font-family:var(--mono);text-align:right;font-size:12px}
 .dt-shots img{width:48px;height:48px;object-fit:cover;border-radius:7px;border:1px solid var(--line);cursor:pointer}
 .dt-shots img:hover,.dt-shots img.on{border-color:var(--acc)}
 .filelist{display:flex;flex-direction:column;gap:1px;background:var(--line);border:1px solid var(--line);border-radius:var(--r);overflow:hidden}
+.b.ico.dgr:hover{color:var(--bad);border-color:rgba(255,96,96,.5)}
 .filerow{display:flex;align-items:center;gap:9px;padding:7px 10px;background:var(--bg2);font-size:12.5px}
 .filerow:hover{background:var(--bg3)}
 .filerow svg{width:15px;height:15px;flex:0 0 auto;color:var(--dim2)}
@@ -1530,6 +1531,22 @@ const BrowserFS = Object.assign({}, FSCommon, {
     await dir.removeEntry(U.base(path));
   },
 
+  /* Rename in place, staying in the same folder. */
+  async renameFile(rootId, path, newName){
+    const r = Store.root(rootId);
+    if(!r || !r.handle) throw new Error('Folder not connected');
+    if(!(await BrowserFS.ensure(r, 'readwrite'))) throw new Error('Write permission denied');
+    const dir = await BrowserFS.resolveDir(r.handle, U.dir(path));
+    try{ await dir.getFileHandle(newName); throw new Error('A file called that already exists here'); }
+    catch(e){ if(e.name !== 'NotFoundError') throw e; }
+    const fh = await dir.getFileHandle(U.base(path));
+    if(typeof fh.move === 'function'){ await fh.move(newName); return; }
+    // older Chromium: copy across then drop the original
+    const w = await (await dir.getFileHandle(newName, {create:true})).createWritable();
+    await (await fh.getFile()).stream().pipeTo(w);
+    await dir.removeEntry(U.base(path));
+  },
+
   canOpenExternally: false,
   extractNatively: null   // the browser build unpacks archives in JS
 });
@@ -1602,6 +1619,13 @@ const DesktopFS = Object.assign({}, FSCommon, {
   },
   async deleteFile(rootId, path){
     await DesktopFS._call('pv_remove', {root: DesktopFS._root(rootId), rel: path});
+  },
+  async renameFile(rootId, path, newName){
+    const root = DesktopFS._root(rootId);
+    const to = (U.dir(path) ? U.dir(path) + '/' : '') + newName;
+    if(await DesktopFS._call('pv_exists', {root, rel: to}))
+      throw new Error('A file called that already exists here');
+    await DesktopFS._call('pv_move', {root, from: path, to});
   },
 
   /* Unpacking happens in Rust so archive bytes never cross the bridge */
@@ -2800,6 +2824,8 @@ const Detail = {
         (['stl','3mf','obj'].includes(f.ext) ? '<button class="b g sm ico" title="3D view" onclick="PV.Viewer.open(\''+f.id+'\')">'+I.eye+'</button>' : '')+
         (f.kind==='image' ? '<button class="b g sm ico" title="Use as cover" onclick="PV.Detail.setCover(\''+f.id+'\')">'+I.img+'</button>' : '')+
         '<button class="b g sm ico" title="Save a copy" onclick="PV.Detail.save(\''+f.id+'\')">'+I.dl+'</button>'+
+        '<button class="b g sm ico" title="Rename on disk" onclick="PV.Detail.renameFile(\''+f.id+'\')">'+I.edit+'</button>'+
+        '<button class="b g sm ico dgr" title="Delete from disk" onclick="PV.Detail.deleteFile(\''+f.id+'\')">'+I.trash+'</button>'+
         '</div>';
     }).join('');
     h += '</div>';
@@ -2880,6 +2906,52 @@ const Detail = {
       Toast.ok('Saving '+f.name);
     }catch(e){ Toast.err('Could not read file: '+e.message); }
   },
+  /* Renaming or deleting changes what the scanner would group, and for a
+     single loose file the filename IS the model name, so both finish by
+     reindexing that folder rather than trying to patch the index by hand. */
+  renameFile(fileId){
+    const f = Store.file(fileId); if(!f) return;
+    Modal.open('Rename file',
+      '<div class="f"><label>File name</label><input id="rnFile" value="'+U.attr(f.name)+'"></div>'+
+      '<div style="color:var(--dim2);font-size:12px;line-height:1.6">Renames it on disk, in the same folder. '+
+      'Keep the extension, or previews and slicer data stop being read.</div>',
+      '<button class="b" onclick="PV.Modal.back()">Cancel</button>'+
+      '<button class="b p" onclick="PV.Detail.saveFileName(\''+fileId+'\')">Rename</button>');
+    setTimeout(()=>{ const i=document.getElementById('rnFile'); if(i){ i.focus(); i.select(); } }, 30);
+  },
+
+  async saveFileName(fileId){
+    const f = Store.file(fileId); if(!f) return;
+    const el = document.getElementById('rnFile');
+    const name = el ? el.value.trim() : '';
+    if(!name || name === f.name) return Modal.back();
+    if(/[\\/]/.test(name)) return Toast.err('A file name cannot contain a slash');
+    if(!FS.renameFile) return Toast.err('Renaming is not supported by this browser');
+    try{
+      await FS.renameFile(f.rootId, f.path, name);
+      Modal.close();
+      Toast.ok('Renamed to '+name+', reindexing');
+      await Scan.run([f.rootId]);
+    }catch(e){ Toast.err('Rename failed: '+e.message); }
+  },
+
+  deleteFile(fileId){
+    const f = Store.file(fileId); if(!f) return;
+    const r = Store.root(f.rootId);
+    Modal.confirm('Delete this file?',
+      'Deletes <b>'+U.esc(f.name)+'</b> ('+U.bytes(f.size)+') from disk.<div class="mono" style="margin-top:8px;'+
+      'font-size:11.5px;color:var(--dim2);word-break:break-all">'+U.esc((r&&r.name)||'')+'/'+U.esc(f.path)+'</div>'+
+      '<div style="margin-top:10px">There is no recycle bin here, so this cannot be undone.</div>',
+      async ()=>{
+        try{
+          await FS.deleteFile(f.rootId, f.path);
+          Modal.close();
+          Toast.ok('Deleted '+f.name+', reindexing');
+          await Scan.run([f.rootId]);
+        }catch(e){ Toast.err('Delete failed: '+e.message); }
+      }, 'Delete', true);
+  },
+
   async setCover(fileId){
     const f = Store.file(fileId); if(!f) return;
     const m = Store.model(f.modelId); if(!m) return;
