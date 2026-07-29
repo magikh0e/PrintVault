@@ -266,6 +266,52 @@ fn pv_open(root: String, rel: String, reveal: bool) -> Result<(), String> {
     }
 }
 
+
+/// Hand a file to a specific program, typically a slicer.
+///
+/// `exe` empty means "whatever the OS opens this with", which for a .3mf or
+/// .stl is usually the slicer anyway. Pointing at one explicitly matters when
+/// several are installed and the file association is not the one you want.
+#[tauri::command]
+async fn pv_open_with(root: String, rel: String, exe: String) -> Result<(), String> {
+    let p = joined(&root, &rel)?;
+    if !p.is_file() {
+        return Err("That file is no longer there".into());
+    }
+    if exe.trim().is_empty() {
+        return pv_open(root, rel, false);
+    }
+    let program = PathBuf::from(exe.trim());
+    if !program.exists() {
+        return Err(format!("No program at {}", program.display()));
+    }
+    // Spawned, not waited on. A slicer takes seconds to appear and the window
+    // should not sit frozen until someone closes it.
+    std::process::Command::new(&program)
+        .arg(&p)
+        .spawn()
+        .map(|_| ())
+        .map_err(|e| format!("Could not start {}: {}", program.display(), e))
+}
+
+/// Pick a program, for choosing a slicer in settings.
+#[tauri::command]
+async fn pv_pick_exe(app: tauri::AppHandle) -> Option<String> {
+    let (tx, rx) = std::sync::mpsc::channel();
+    let mut dlg = app.dialog().file();
+    if cfg!(windows) {
+        dlg = dlg.add_filter("Programs", &["exe"]);
+    }
+    dlg.pick_file(move |picked| {
+        let _ = tx.send(picked);
+    });
+    rx.recv()
+        .ok()
+        .flatten()
+        .and_then(|p| p.into_path().ok())
+        .map(|p| p.to_string_lossy().to_string())
+}
+
 #[derive(Serialize)]
 pub struct ExtractResult {
     written: usize,
@@ -363,6 +409,129 @@ async fn pv_root_ok(root: String) -> bool {
     Path::new(&root).is_dir()
 }
 
+
+/* ---------------------------------------------------------------
+   Sending a sliced file to a printer
+
+   Moonraker (Klipper, and the Creality K2 among others) and OctoPrint both
+   take a multipart upload over plain HTTP on the local network, which is why
+   this lives in Rust: the webview will not post to an unencrypted box on your
+   LAN, and a browser page never could.
+   --------------------------------------------------------------- */
+
+#[derive(Serialize)]
+pub struct PrinterInfo {
+    flavour: String,
+    name: String,
+    state: String,
+}
+
+fn base_url(addr: &str) -> String {
+    let a = addr.trim().trim_end_matches('/');
+    if a.starts_with("http://") || a.starts_with("https://") {
+        a.to_string()
+    } else {
+        format!("http://{}", a)
+    }
+}
+
+fn client() -> Result<reqwest::Client, String> {
+    reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(600))
+        .connect_timeout(std::time::Duration::from_secs(6))
+        .build()
+        .map_err(|e| e.to_string())
+}
+
+/// Work out what is answering at that address, so a typo says so plainly
+/// rather than failing later halfway through an upload.
+#[tauri::command]
+async fn pv_printer_probe(addr: String, api_key: Option<String>) -> Result<PrinterInfo, String> {
+    let base = base_url(&addr);
+    let c = client()?;
+
+    if let Ok(r) = c.get(format!("{}/printer/info", base)).send().await {
+        if r.status().is_success() {
+            let v: serde_json::Value = r.json().await.map_err(|e| e.to_string())?;
+            let res = &v["result"];
+            return Ok(PrinterInfo {
+                flavour: "moonraker".into(),
+                name: res["hostname"].as_str().unwrap_or("Klipper").to_string(),
+                state: res["state"].as_str().unwrap_or("unknown").to_string(),
+            });
+        }
+    }
+
+    let mut req = c.get(format!("{}/api/version", base));
+    if let Some(k) = api_key.as_deref().filter(|k| !k.is_empty()) {
+        req = req.header("X-Api-Key", k);
+    }
+    if let Ok(r) = req.send().await {
+        if r.status().is_success() {
+            let v: serde_json::Value = r.json().await.map_err(|e| e.to_string())?;
+            return Ok(PrinterInfo {
+                flavour: "octoprint".into(),
+                name: format!("OctoPrint {}", v["server"].as_str().unwrap_or("")),
+                state: "ready".into(),
+            });
+        }
+        return Err("Reached it, but it did not answer as Moonraker or OctoPrint. Wrong port, or an API key is needed".into());
+    }
+    Err("Nothing answered at that address".into())
+}
+
+/// Upload a sliced file, optionally starting it.
+#[tauri::command]
+async fn pv_printer_send(
+    root: String,
+    rel: String,
+    addr: String,
+    flavour: String,
+    api_key: Option<String>,
+    start: bool,
+) -> Result<String, String> {
+    let p = joined(&root, &rel)?;
+    let name = p
+        .file_name()
+        .map(|s| s.to_string_lossy().to_string())
+        .ok_or("Bad file name")?;
+    let bytes = tokio::fs::read(&p).await.map_err(|e| e.to_string())?;
+    let base = base_url(&addr);
+    let c = client()?;
+
+    let part = reqwest::multipart::Part::bytes(bytes)
+        .file_name(name.clone())
+        .mime_str("application/octet-stream")
+        .map_err(|e| e.to_string())?;
+
+    let (url, form) = if flavour == "octoprint" {
+        let mut f = reqwest::multipart::Form::new().part("file", part);
+        if start {
+            f = f.text("print", "true");
+        }
+        (format!("{}/api/files/local", base), f)
+    } else {
+        let mut f = reqwest::multipart::Form::new().part("file", part);
+        f = f.text("root", "gcodes");
+        if start {
+            f = f.text("print", "true");
+        }
+        (format!("{}/server/files/upload", base), f)
+    };
+
+    let mut req = c.post(url).multipart(form);
+    if let Some(k) = api_key.as_deref().filter(|k| !k.is_empty()) {
+        req = req.header("X-Api-Key", k);
+    }
+    let r = req.send().await.map_err(|e| e.to_string())?;
+    let code = r.status();
+    let body = r.text().await.unwrap_or_default();
+    if !code.is_success() {
+        return Err(format!("Printer refused it ({}): {}", code.as_u16(), body.chars().take(200).collect::<String>()));
+    }
+    Ok(name)
+}
+
 static APP: std::sync::OnceLock<tauri::AppHandle> = std::sync::OnceLock::new();
 
 /// Ask the release manifest whether a newer signed build exists, and offer it.
@@ -420,6 +589,10 @@ pub fn run() {
             pv_move,
             pv_exists,
             pv_open,
+            pv_open_with,
+            pv_pick_exe,
+            pv_printer_probe,
+            pv_printer_send,
             pv_extract,
             pv_root_ok
         ])

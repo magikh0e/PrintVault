@@ -1,6 +1,6 @@
 [package]
 name = "printvault-desktop"
-version = "0.2.6"
+version = "0.2.7"
 description = "PrintVault desktop client"
 authors = ["magikh0e"]
 edition = "2021"
@@ -24,6 +24,11 @@ tauri-plugin-dialog = "2"
 tauri-plugin-opener = "2"
 # Signed in-app updates, checked against the GitHub release manifest
 tauri-plugin-updater = "2"
+# Uploading to a printer on the LAN. rustls rather than the system TLS stack
+# so Linux builds do not need OpenSSL present at runtime.
+reqwest = { version = "0.12", default-features = false, features = ["json", "multipart", "stream", "rustls-tls"] }
+tokio = { version = "1", features = ["fs"] }
+tokio-util = { version = "0.7", features = ["io"] }
 # Recursive directory walking. The whole point of the desktop build is that one
 # call returns the full listing instead of a browser round trip per file.
 walkdir = "2"

@@ -382,7 +382,7 @@ table.t .num{font-family:var(--mono);text-align:right;font-size:12px}
  * Copyright (C) 2026 magikh0e
  * License: GPL-3.0-or-later (https://www.gnu.org/licenses/gpl-3.0.html)
  */
-const APP_VERSION = '0.2.6';
+const APP_VERSION = '0.2.7';
 
 /* ============================================================
    U — utilities
@@ -469,6 +469,7 @@ const I = (function(){
     money: s('<circle cx="10" cy="10" r="7.5"/><path d="M12.5 7.2A2.6 2.6 0 0 0 10 5.8c-1.4 0-2.5.8-2.5 1.9 0 2.7 5 1.4 5 4.1 0 1.1-1.1 1.9-2.5 1.9a2.6 2.6 0 0 1-2.5-1.4M10 4.4v11.2"/>'),
     refresh: s('<path d="M17 8.5A7.2 7.2 0 0 0 4.6 5.2L2.8 7M3 11.5a7.2 7.2 0 0 0 12.4 3.3L17.2 13"/><path d="M2.8 3v4h4M17.2 17v-4h-4"/>'),
     eye: s('<path d="M1.8 10S4.7 4.5 10 4.5 18.2 10 18.2 10 15.3 15.5 10 15.5 1.8 10 1.8 10z"/><circle cx="10" cy="10" r="2.4"/>'),
+    eyeOff: s('<path d="M8.6 5.1A6.9 6.9 0 0 1 10 4.5c5.3 0 8.2 5.5 8.2 5.5a14.6 14.6 0 0 1-2.4 3.1M5.3 5.9A14.4 14.4 0 0 0 1.8 10s2.9 5.5 8.2 5.5a7.5 7.5 0 0 0 3.1-.7M2.5 2.5l15 15"/>'),
     filter: s('<path d="M2.5 4h15l-5.8 6.6v5l-3.4 1.8v-6.8z"/>'),
     ext: s('<path d="M12 2.5h5.5V8"/><path d="M17.5 2.5 9 11"/><path d="M15 11.5v4.2a1.8 1.8 0 0 1-1.8 1.8H4.3a1.8 1.8 0 0 1-1.8-1.8V6.8A1.8 1.8 0 0 1 4.3 5h4.2"/>')
   };
@@ -1378,6 +1379,18 @@ const FSCommon = {
     return new Uint8Array(await new Response(st).arrayBuffer());
   },
   /* Reject anything that would write outside the destination folder */
+  /* One path segment the filesystem will actually accept.
+     Trailing dots and spaces are the ones that bite: plenty of downloads are
+     named "Some Model .zip", and unpacking that asked for a folder ending in
+     a space, which Chromium refuses outright and Windows silently mangles. */
+  safeName(s){
+    const out = String(s == null ? '' : s)
+      .replace(/[<>:"|?*\x00-\x1f\\/]/g, '_')
+      .replace(/[. ]+$/, '')
+      .trim();
+    return out || 'unnamed';
+  },
+
   safeSegs(name){
     const parts = String(name).split(/[\\/]+/), out = [];
     for(const p of parts){
@@ -1556,7 +1569,8 @@ const BrowserFS = Object.assign({}, FSCommon, {
   },
 
   canOpenExternally: false,
-  extractNatively: null   // the browser build unpacks archives in JS
+  extractNatively: null,  // the browser build unpacks archives in JS
+  canSend: false          // no launching programs, no posting to your LAN
 });
 
 /* ---------- Desktop: Tauri shell ---------- */
@@ -1646,6 +1660,21 @@ const DesktopFS = Object.assign({}, FSCommon, {
   canOpenExternally: true,
   async openExternal(rootId, path, reveal){
     await DesktopFS._call('pv_open', {root: DesktopFS._root(rootId), rel: path, reveal: !!reveal});
+  },
+
+  /* Sending work out of the app: to a slicer on this machine, or to a printer
+     on the network. Both are desktop only, the browser can do neither. */
+  canSend: true,
+  async openWith(rootId, path, exe){
+    await DesktopFS._call('pv_open_with', {root: DesktopFS._root(rootId), rel: path, exe: exe||''});
+  },
+  pickExe(){ return DesktopFS._call('pv_pick_exe'); },
+  probePrinter(addr, apiKey){ return DesktopFS._call('pv_printer_probe', {addr, apiKey: apiKey||null}); },
+  sendToPrinter(rootId, path, p, start){
+    return DesktopFS._call('pv_printer_send', {
+      root: DesktopFS._root(rootId), rel: path,
+      addr: p.addr, flavour: p.flavour||'moonraker', apiKey: p.apiKey||null, start: !!start
+    });
   }
 });
 
@@ -1884,10 +1913,15 @@ const Scan = {
       subs.get(p).push(d);
     });
 
-    // stems of models/archives sitting loose directly in each folder
+    // Stems of loose model files in each folder. Archives are deliberately
+    // left out: a folder named after a .3mf beside it holds that model's
+    // parts and belongs with it, but a folder named after a .zip beside it is
+    // that zip unpacked, and is a model in its own right. Counting archives
+    // here folded freshly extracted folders into their parent category, so
+    // everything you had just unpacked vanished from the library.
     const stems = new Map();
     found.forEach(f=>{
-      if(!isPrintable(f.ext) && f.kind !== 'arch') return;
+      if(!isPrintable(f.ext)) return;
       const d = U.dir(f.path);
       if(!stems.has(d)) stems.set(d, new Set());
       stems.get(d).add(U.stem(f.name).toLowerCase());
@@ -1945,9 +1979,16 @@ const Scan = {
     const found = [];
     const stats = {badDirs:[], tooDeep:0, total:0};
     let seen = 0;
+    // Folders you have chosen to ignore in this root, matched as path prefixes.
+    // The usual case is a holding area you unpack downloads into, where the
+    // unpacked copy would otherwise show up beside the archive it came from.
+    const excl = (root.excludes||[]).map(x=>Meta.norm(x)).filter(Boolean);
+    let skippedByExclude = 0;
     for await (const f of FS.walk(root, skip, stats)){
       if(Prog.cancelled) return;
       stats.total++;
+      const lower = Meta.norm(f.path);
+      if(excl.some(x=>lower === x || lower.startsWith(x+'/'))){ skippedByExclude++; continue; }
       const ext = U.ext(f.name), kind = kindOf(ext);
       if(kind === 'other') continue;
       // size/mtime arrive with the listing on desktop; the browser must stat separately
@@ -1955,6 +1996,8 @@ const Scan = {
       if(++seen % 200 === 0) Prog.set('Walking '+root.name+': '+seen+' files', seen % 2000, 2000);
     }
     if(Prog.cancelled) return;
+
+    if(skippedByExclude) console.info('[PrintVault] '+skippedByExclude+' files skipped by exclusions in "'+root.name+'"');
 
     if(stats.badDirs.length){
       console.warn('[PrintVault] unreadable folders in "'+root.name+'":', stats.badDirs);
@@ -2866,6 +2909,8 @@ const Detail = {
   footer(m){
     return '<button class="b" onclick="PV.Detail.copyPath()">'+I.link+' Copy path</button>'+
       (m.source ? '<a class="b" href="'+U.attr(m.source)+'" target="_blank" rel="noopener noreferrer">'+I.ext+' Source</a>' : '')+
+      '<button class="b g" onclick="PV.Detail.exclude()" title="Stop indexing this folder">'+I.eyeOff+' Ignore</button>'+
+      (FS.canSend ? '<button class="b" onclick="PV.Send.open(\''+m.id+'\')">'+I.print+' Send</button>' : '')+
       '<div class="sp"></div>'+
       '<button class="b" onclick="PV.Queue.add(\''+m.id+'\')">'+I.queue+' Queue</button>'+
       '<button class="b" onclick="PV.Detail.edit()">'+I.edit+' Edit</button>'+
@@ -2952,6 +2997,31 @@ const Detail = {
     // opened from a card, so stay in the library rather than diving into it
     if(!Detail._renameFromCard) Detail.open(m.id);
     Toast.ok('Renamed to '+name);
+  },
+
+  /* Stop indexing this model's folder. Nothing on disk is touched: the files
+     stay, they just stop producing a card. Meant for the unpacked copy of a
+     download sitting next to the archive it came from. */
+  exclude(){
+    const m = Store.model(Detail.cur); if(!m) return;
+    const r = Store.root(m.rootId); if(!r) return;
+    const files = Store.modelFiles(m.id);
+    const isDir = !(files.length === 1 && files[0].path === m.path);
+    const path = isDir ? m.path : U.dir(m.path);
+    if(!path) return Toast.err('That is the folder itself, exclude something inside it instead');
+    Modal.confirm('Stop indexing this folder?',
+      'PrintVault will ignore <b>'+U.esc(U.base(path))+'</b> and everything under it on the next scan, '+
+      'and drop the '+(isDir?'card':'cards')+' it produced.'+
+      '<div class="mono" style="margin-top:8px;font-size:11.5px;color:var(--dim2);word-break:break-all">'+
+      U.esc(r.name||'')+'/'+U.esc(path)+'</div>'+
+      '<div style="margin-top:10px">Nothing on disk is moved or deleted. Undo it in Settings under Indexed folders.</div>',
+      async ()=>{
+        r.excludes = (r.excludes||[]).concat([path]);
+        await Store.put('roots', r);
+        Modal.close();
+        Toast.ok('Excluded '+U.base(path)+', reindexing');
+        await Scan.run([r.id]);
+      }, 'Exclude', true);
   },
 
   renameFile(fileId){
@@ -3185,7 +3255,7 @@ const Archive = {
   extractPrompt(modelId){
     const m = Store.model(modelId); if(!m) return;
     const f = Archive.file(m); if(!f) return;
-    const dest = (U.dir(f.path) ? U.dir(f.path)+'/' : '') + U.stem(f.name);
+    const dest = (U.dir(f.path) ? U.dir(f.path)+'/' : '') + FS.safeName(U.stem(f.name));
     Modal.open('Extract '+f.name+'?',
       '<p style="color:var(--dim);line-height:1.65;margin:0 0 12px">Unpacks the archive into a new folder beside it:</p>'+
       '<div class="mono" style="background:var(--bg3);border:1px solid var(--line);border-radius:8px;padding:9px 11px;'+
@@ -3243,7 +3313,7 @@ const Archive = {
     // and compression methods browsers cannot inflate still work.
     if(FS.extractNatively){
       try{
-        const destRel = (U.dir(f.path) ? U.dir(f.path) + '/' : '') + U.stem(f.name);
+        const destRel = (U.dir(f.path) ? U.dir(f.path) + '/' : '') + FS.safeName(U.stem(f.name));
         Prog.set('Extracting '+f.name+'...', 0, 1);
         const r = await FS.extractNatively(f.rootId, f.path, destRel);
         return {ok:true, written:r.written, failed:r.failed, problems:r.problems || []};
@@ -3254,7 +3324,7 @@ const Archive = {
 
     try{
       const entries = await Archive.entries(f);
-      const destSegs = (U.dir(f.path) ? U.dir(f.path).split('/') : []).concat([U.stem(f.name)]);
+      const destSegs = (U.dir(f.path) ? U.dir(f.path).split('/') : []).concat([FS.safeName(U.stem(f.name))]);
       const destDir = await FS.mkdirp(Store.root(f.rootId).handle, destSegs);
       for(let i = 0; i < entries.length; i++){
         if(Prog.cancelled) break;
@@ -3815,6 +3885,91 @@ const Filament = {
    Queue — what to print next
    ============================================================ */
 const PRIOS = [['hi','High'],['md','Normal'],['lo','Someday']];
+/* ============================================================
+   Send — hand a file to a slicer, or upload it to a printer
+
+   Desktop only. A browser page cannot launch a program, and it cannot POST
+   to an unencrypted box on your network either.
+   ============================================================ */
+const Send = {
+  /* Sliced files first, since those are what a printer can actually run.
+     Then project files, then plain meshes for the slicer. */
+  candidates(m){
+    const files = Store.modelFiles(m.id);
+    const rank = f => f.kind === 'gcode' ? 0 : f.ext === '3mf' ? 1 : ['stl','obj'].includes(f.ext) ? 2 : 9;
+    return files.filter(f=>rank(f) < 9).sort((a,b)=>rank(a)-rank(b) || (b.size||0)-(a.size||0));
+  },
+  printers(){ return Store.printers.filter(p=>p.addr); },
+
+  open(modelId){
+    const m = Store.model(modelId); if(!m) return;
+    if(!FS.canSend) return Toast.err('Sending needs the desktop app');
+    const files = Send.candidates(m);
+    if(!files.length) return Toast.err('Nothing here a slicer or printer could take');
+    Send._model = modelId;
+
+    const opts = files.map((f,i)=>'<option value="'+U.attr(f.id)+'"'+(i?'':' selected')+'>'+
+      U.esc(f.path === m.path ? f.name : f.path)+'  ('+U.bytes(f.size)+')</option>').join('');
+    const prs = Send.printers();
+    const sliced = files.filter(f=>f.kind === 'gcode');
+
+    let h = '<div class="f"><label>File</label><select id="sndFile">'+opts+'</select>'+
+      '<div class="hint">Sliced gcode is listed first. A printer can only run gcode, a slicer takes any of these.</div></div>';
+
+    h += '<div class="f"><label>Slicer</label>'+
+      '<button class="b" style="width:100%;justify-content:center" onclick="PV.Send.toSlicer()">'+I.ext+' Open in slicer</button>'+
+      '<div class="hint">'+(Store.settings.slicerPath
+        ? U.esc(U.base(Store.settings.slicerPath))
+        : 'Whatever this machine opens the file type with. Set a specific slicer in Settings.')+'</div></div>';
+
+    if(prs.length){
+      h += '<div class="f"><label>Printer</label><select id="sndPrinter">'+
+        prs.map(p=>'<option value="'+U.attr(p.id)+'">'+U.esc(p.name)+' &mdash; '+U.esc(p.addr)+'</option>').join('')+
+        '</select>'+
+        (sliced.length ? '' : '<div class="hint">Nothing here is sliced yet, so a printer would have nothing to run.</div>')+
+        '</div>'+
+        '<div style="display:flex;gap:8px;flex-wrap:wrap">'+
+        '<button class="b" onclick="PV.Send.toPrinter(false)">'+I.up+' Upload</button>'+
+        '<button class="b p" onclick="PV.Send.toPrinter(true)">'+I.print+' Upload and start</button></div>';
+    } else {
+      h += '<div class="note">No printer has a network address yet. Add one under Settings &rarr; Printers to '+
+        'upload straight to it.</div>';
+    }
+
+    Modal.open('Send: '+m.name, h, '<button class="b" onclick="PV.Modal.back()">Close</button>');
+  },
+
+  _file(){
+    const id = Modal.val('sndFile');
+    return Store.file(id);
+  },
+
+  async toSlicer(){
+    const f = Send._file(); if(!f) return;
+    try{
+      await FS.openWith(f.rootId, f.path, Store.settings.slicerPath || '');
+      Modal.close();
+      Toast.ok('Opening '+f.name);
+    }catch(e){ Toast.err(e.message || String(e)); }
+  },
+
+  async toPrinter(start){
+    const f = Send._file(); if(!f) return;
+    const p = Store.printer(Modal.val('sndPrinter'));
+    if(!p || !p.addr) return Toast.err('That printer has no address');
+    if(f.kind !== 'gcode' && !confirm(f.name+' is not sliced gcode. Send it anyway?')) return;
+    Prog.start('Sending '+f.name+' to '+p.name+'...');
+    try{
+      await FS.sendToPrinter(f.rootId, f.path, p, start);
+      Prog.stop(); Modal.close();
+      Toast.ok(start ? 'Sent and started on '+p.name : 'Uploaded to '+p.name);
+    }catch(e){
+      Prog.stop();
+      Toast.err('Send failed: '+(e.message || e));
+    }
+  }
+};
+
 const Queue = {
   render(v){
     const pending = U.sortBy(Store.queue.filter(q=>q.status!=='done'),
@@ -4335,6 +4490,21 @@ const Settings = {
         '<button class="b g sm ico" onclick="PV.Library.renameRoot(\''+r.id+'\')" title="Rename">'+I.edit+'</button>'+
         '<button class="b g sm ico" onclick="PV.Library.removeRoot(\''+r.id+'\')" title="Remove">'+I.trash+'</button></td></tr>').join('')+
       '</tbody></table>';
+
+    // indexed rather than passed inline, so a path with a quote in it cannot
+    // break out of the onclick attribute
+    const excluded = Settings._excl = Store.roots.flatMap(r=>(r.excludes||[]).map(x=>({r, x})));
+    if(excluded.length){
+      h += '<div style="margin-top:14px"><b style="font-size:12.5px;color:var(--dim)">Ignored folders</b>'+
+        '<div style="color:var(--dim2);font-size:12px;line-height:1.6;margin:4px 0 8px">Still on disk, just not indexed. '+
+        'Removing one brings it back on the next scan.</div>'+
+        excluded.map(({r,x}, i)=>'<div style="display:flex;align-items:center;gap:8px;padding:5px 0;border-top:1px solid var(--line)">'+
+          '<span class="mono" style="flex:1;min-width:0;font-size:11.5px;color:var(--dim);word-break:break-all">'+
+          U.esc(r.name||'')+'/'+U.esc(x)+'</span>'+
+          '<button class="b g sm" onclick="PV.Settings.unexclude('+i+')">Stop ignoring</button></div>').join('')+
+        '</div>';
+    }
+
     h += '<div style="display:flex;gap:8px;margin-top:12px"><button class="b p" onclick="PV.Scan.addRoot()">'+I.plus+' Add folder</button>'+
       (Store.roots.length?'<button class="b" onclick="PV.Scan.run()">'+I.refresh+' Rescan all</button>':'')+
       (Store.models.length?'<button class="b" onclick="PV.Settings.regenAll()">'+I.img+' Rebuild missing previews</button>':'')+'</div></div>';
@@ -4378,10 +4548,24 @@ const Settings = {
         '<div class="hint">Used for print cost estimates. A 150W printer at $0.20/kWh is about $0.03/h.</div></div>'+
       '</div>';
 
+    if(FS.canSend){
+      h += '<div class="panel"><h3>'+I.ext+' Slicer</h3>'+
+        '<p style="color:var(--dim);font-size:12.5px;line-height:1.65;margin:0 0 12px">Which program <b>Send &rarr; '+
+        'Open in slicer</b> hands a file to. Leave it unset and the file association on this machine decides, '+
+        'which is usually the right answer until you have more than one slicer installed.</p>'+
+        '<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">'+
+          '<button class="b" onclick="PV.Settings.pickSlicer()">'+I.folder+' Choose slicer</button>'+
+          (s.slicerPath ? '<span class="mono" style="font-size:12px;color:var(--dim);word-break:break-all">'+
+            U.esc(s.slicerPath)+'</span><button class="b g sm ico" title="Clear" onclick="PV.Settings.clearSlicer()">'+
+            I.trash+'</button>' : '<span style="color:var(--dim2);font-size:12.5px">Using the file association</span>')+
+        '</div></div>';
+    }
+
     h += '<div class="panel"><h3>'+I.print+' Printers</h3>'+
-      (Store.printers.length ? '<table class="t"><thead><tr><th>Name</th><th>Model</th><th class="num">Build volume</th><th class="num">Nozzle</th><th></th></tr></thead><tbody>'+
+      (Store.printers.length ? '<table class="t"><thead><tr><th>Name</th><th>Model</th><th>Address</th><th class="num">Nozzle</th><th></th></tr></thead><tbody>'+
         Store.printers.map(p=>'<tr><td><b>'+U.esc(p.name)+'</b></td><td>'+U.esc(p.model||'—')+'</td>'+
-          '<td class="num">'+(p.bedX?p.bedX+'&times;'+p.bedY+'&times;'+p.bedZ:'—')+'</td><td class="num">'+(p.nozzle||'—')+'</td>'+
+          '<td class="mono" style="font-size:12px">'+(p.addr?U.esc(p.addr):'<span style="color:var(--dim2)">—</span>')+'</td>'+
+          '<td class="num">'+(p.nozzle||'—')+'</td>'+
           '<td style="white-space:nowrap"><button class="b g sm ico" onclick="PV.Settings.printer(\''+p.id+'\')">'+I.edit+'</button>'+
           '<button class="b g sm ico" onclick="PV.Settings.delPrinter(\''+p.id+'\')">'+I.trash+'</button></td></tr>').join('')+'</tbody></table>'
        : '<div style="color:var(--dim2);font-size:12.5px;margin-bottom:10px">No printers added. Optional, but handy for autocomplete when logging prints.</div>')+
@@ -4434,6 +4618,7 @@ const Settings = {
 
   printer(id){
     const p = id ? Store.printer(id) : null;
+    Settings._flavour = p ? p.flavour : '';
     Modal.open(p ? 'Edit printer' : 'Add printer',
       '<div class="fr"><div class="f"><label>Name</label><input id="prName" value="'+U.attr(p?p.name:'')+'" placeholder="Workhorse"></div>'+
       '<div class="f"><label>Model</label><input id="prModel" value="'+U.attr(p?p.model:'')+'" placeholder="Prusa MK4S"></div></div>'+
@@ -4441,6 +4626,13 @@ const Settings = {
       '<div class="f"><label>Bed Y (mm)</label><input type="number" id="prY" value="'+U.attr(p?p.bedY:210)+'"></div>'+
       '<div class="f"><label>Height Z (mm)</label><input type="number" id="prZ" value="'+U.attr(p?p.bedZ:220)+'"></div></div>'+
       '<div class="f" style="max-width:200px"><label>Nozzle (mm)</label><input type="number" step="0.05" id="prN" value="'+U.attr(p?p.nozzle:0.4)+'"></div>'+
+      '<div class="fr"><div class="f"><label>Network address</label><input id="prAddr" value="'+U.attr(p?p.addr||'':'')+'" placeholder="192.168.1.42">'+
+        '<div class="hint">Moonraker (Klipper, Creality K2) or OctoPrint on your LAN. Leave empty if you do not want to upload to it. Desktop only.</div></div>'+
+      '<div class="f"><label>API key</label><input id="prKey" value="'+U.attr(p?p.apiKey||'':'')+'" placeholder="OctoPrint only">'+
+        '<div class="hint">Moonraker usually needs none.</div></div></div>'+
+      '<div style="display:flex;gap:8px;align-items:center;margin-bottom:12px">'+
+        '<button class="b" onclick="PV.Settings.testPrinter()">Test connection</button>'+
+        '<span id="prTest" style="font-size:12.5px;color:var(--dim2)"></span></div>'+
       '<div class="f"><label>Notes</label><textarea id="prNotes">'+U.esc(p?p.notes||'':'')+'</textarea></div>',
       '<div class="sp"></div><button class="b" onclick="PV.Modal.back()">Cancel</button>'+
       '<button class="b p" onclick="PV.Settings.savePrinter('+(p?"'"+p.id+"'":'null')+')">Save</button>');
@@ -4449,11 +4641,45 @@ const Settings = {
     const p = Object.assign({id: id||U.id('pr')}, (id?Store.printer(id):null)||{}, {
       name: Modal.val('prName').trim() || 'Printer', model: Modal.val('prModel').trim(),
       bedX: Modal.num('prX'), bedY: Modal.num('prY'), bedZ: Modal.num('prZ'),
-      nozzle: Modal.num('prN'), notes: Modal.val('prNotes')
+      nozzle: Modal.num('prN'), notes: Modal.val('prNotes'),
+      addr: Modal.val('prAddr').trim(), apiKey: Modal.val('prKey').trim(),
+      flavour: Settings._flavour || (id && Store.printer(id) ? Store.printer(id).flavour : '') || 'moonraker'
     });
     await Store.put('printers', p);
     Modal.close(); UI.render(); Toast.ok('Printer saved');
   },
+  async testPrinter(){
+    const el = document.getElementById('prTest');
+    const addr = Modal.val('prAddr').trim();
+    if(!addr){ if(el) el.textContent = 'Enter an address first'; return; }
+    if(!FS.probePrinter){ if(el) el.textContent = 'Desktop app only'; return; }
+    if(el) el.textContent = 'Checking...';
+    try{
+      const info = await FS.probePrinter(addr, Modal.val('prKey').trim());
+      Settings._flavour = info.flavour;
+      if(el){ el.style.color = 'var(--ok, var(--acc))';
+        el.textContent = info.flavour + ' · ' + info.name + ' · ' + info.state; }
+    }catch(e){
+      if(el){ el.style.color = 'var(--bad)'; el.textContent = (e.message || e); }
+    }
+  },
+
+  async pickSlicer(){
+    if(!FS.pickExe) return Toast.err('Desktop app only');
+    const p = await FS.pickExe();
+    if(p){ await Store.setting('slicerPath', p); UI.render(); Toast.ok('Slicer set to '+U.base(p)); }
+  },
+  async clearSlicer(){ await Store.setting('slicerPath', ''); UI.render(); },
+
+  async unexclude(i){
+    const e = (Settings._excl||[])[i]; if(!e) return;
+    const r = Store.root(e.r.id); if(!r) return;
+    r.excludes = (r.excludes||[]).filter(x=>x !== e.x);
+    await Store.put('roots', r);
+    UI.render();
+    Toast.ok('Will be indexed again on the next scan');
+  },
+
   delPrinter(id){
     Modal.confirm('Delete printer?', 'Print logs keep the printer name as text.', async ()=>{
       await Store.remove('printers', id); Modal.close(); UI.render();
@@ -4654,7 +4880,7 @@ async function checkPerms(){
   }
 })();
 
-window.PV = {U, I, DB, Store, Toast, Prog, Modal, FS, Scan, Meta, Render, Thumbs, Work,
+window.PV = {U, I, DB, Store, Toast, Prog, Modal, FS, Scan, Meta, Send, Render, Thumbs, Work,
   UI, Library, Detail, Viewer, Archive, Prints, Filament, Queue, Dupes, Stats, Settings, APP_VERSION};
 
 
