@@ -1960,9 +1960,18 @@ const Scan = {
         // rather than standing as a second card for the same thing.
         // Never unpacked? Then it is a model in its own right, otherwise the
         // whole download stays invisible in the library.
-        mp = layout.dirs.has(stem)
-          ? Scan.modelPathFor(stem + '/_', layout)
-          : {path:f.path, loose:true};
+        if(layout.dirs.has(stem)){
+          // Ask where a file sitting directly inside the unpacked folder would
+          // belong, using a name that cannot collide with a real one. If the
+          // answer is "on its own", the folder is a category rather than a
+          // model, and the stand-in name must not be kept: doing so gave the
+          // archive a model path pointing at a file that does not exist, which
+          // showed up as a card with a size and no title.
+          const inner = Scan.modelPathFor(stem + '/_', layout);
+          mp = inner.loose ? {path:f.path, loose:true} : inner;
+        } else {
+          mp = {path:f.path, loose:true};
+        }
       }
       const rec = {
         id: root.id+':'+f.path, rootId: root.id, path: f.path, name: f.name,
