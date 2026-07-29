@@ -2107,6 +2107,12 @@ const Scan = {
         rating: 0, favorite: false, thumbId: null, thumbSrc: null,
         createdAt: Date.now()
       }, prev || {});
+      // prev deliberately wins, so a rescan keeps what you typed. A blank name
+      // is not something you typed though, and letting it win meant a record
+      // that once ended up nameless stayed nameless through every later scan,
+      // including after the bug that produced it was fixed.
+      if(!String(m.name || '').trim()) m.name = nameOut;
+      m.path = mpath;   // comes from disk, never edited, so never inherited
       m.isArchive = archOnly && !hasPrintable;
       m.archiveExt = m.isArchive ? list[0].ext : null;
       if(m.isArchive && list[0].zip){
