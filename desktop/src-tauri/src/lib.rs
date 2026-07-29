@@ -13,7 +13,8 @@ use std::path::{Path, PathBuf};
 use serde::Serialize;
 use tauri::ipc::Response;
 use tauri::{WebviewUrl, WebviewWindowBuilder};
-use tauri_plugin_dialog::DialogExt;
+use tauri_plugin_dialog::{DialogExt, MessageDialogButtons};
+use tauri_plugin_updater::UpdaterExt;
 use walkdir::WalkDir;
 
 #[derive(Serialize)]
@@ -364,9 +365,49 @@ async fn pv_root_ok(root: String) -> bool {
 
 static APP: std::sync::OnceLock<tauri::AppHandle> = std::sync::OnceLock::new();
 
+/// Ask the release manifest whether a newer signed build exists, and offer it.
+///
+/// Every failure is deliberately silent: offline, no release yet, a declined
+/// prompt. Someone organising print files should never get an error dialog
+/// because their network was flaky at launch.
+///
+/// Runs on a worker thread, so `blocking_show` is safe here. On the main
+/// thread it would deadlock GTK, the same way the folder picker did.
+async fn check_for_update(app: tauri::AppHandle) {
+    let updater = match app.updater() {
+        Ok(u) => u,
+        Err(_) => return,
+    };
+    let update = match updater.check().await {
+        Ok(Some(u)) => u,
+        _ => return,
+    };
+
+    let msg = format!(
+        "PrintVault {} is available (you have {}). Install it and restart now?
+
+Your library and index are untouched.",
+        update.version, update.current_version
+    );
+    let accepted = app
+        .dialog()
+        .message(msg)
+        .title("Update available")
+        .buttons(MessageDialogButtons::OkCancelCustom(
+            "Install".into(),
+            "Later".into(),
+        ))
+        .blocking_show();
+
+    if accepted && update.download_and_install(|_, _| {}, || {}).await.is_ok() {
+        app.restart();
+    }
+}
+
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_opener::init())
         .invoke_handler(tauri::generate_handler![
             pv_pick_folder,
@@ -398,6 +439,9 @@ pub fn run() {
                 .min_inner_size(720.0, 520.0)
                 .initialization_script(init.as_str())
                 .build()?;
+
+            let handle = app.handle().clone();
+            tauri::async_runtime::spawn(async move { check_for_update(handle).await });
 
             Ok(())
         })
