@@ -2093,11 +2093,16 @@ const Scan = {
       // the model path IS a file path when the model is a single loose file
       const loose = list.length === 1 && list[0].path === mpath;
       const nameSrc = loose ? U.stem(U.base(mpath)) : (U.base(mpath) || root.name);
+      // titleize eats underscores and dashes, so a stem made only of those comes
+      // back empty and the card renders with no title at all. Keep falling back
+      // until something is left to show.
+      const nameOut = U.titleize(nameSrc) || nameSrc || U.base(mpath) ||
+                      (list[0] && list[0].name) || root.name || 'Untitled';
       const gc = list.filter(f=>f.g).map(f=>f.g);
       const best = gc.sort((a,b)=>(b.timeMin||0)-(a.timeMin||0))[0] || null;
       const m = Object.assign({
         id: mid, rootId: root.id, path: mpath,
-        name: U.titleize(nameSrc),
+        name: nameOut,
         tags: [], collections: [], source:'', creator:'', license:'', notes:'',
         rating: 0, favorite: false, thumbId: null, thumbSrc: null,
         createdAt: Date.now()
