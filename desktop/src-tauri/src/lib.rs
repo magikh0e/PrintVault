@@ -659,6 +659,17 @@ Your library and index are untouched.",
 
 pub fn run() {
     tauri::Builder::default()
+        // Must be registered first. A second launch hands its arguments to the
+        // running instance and exits, rather than opening a second window onto
+        // the same database.
+        .plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
+            use tauri::Manager;
+            if let Some(w) = app.get_webview_window("main") {
+                let _ = w.unminimize();
+                let _ = w.show();
+                let _ = w.set_focus();
+            }
+        }))
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_opener::init())

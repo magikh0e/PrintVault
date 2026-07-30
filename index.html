@@ -394,7 +394,7 @@ table.t .num{font-family:var(--mono);text-align:right;font-size:12px}
  * Copyright (C) 2026 magikh0e
  * License: GPL-3.0-or-later (https://www.gnu.org/licenses/gpl-3.0.html)
  */
-const APP_VERSION = '0.2.8';
+const APP_VERSION = '0.2.9';
 
 /* ============================================================
    U — utilities
@@ -2329,9 +2329,23 @@ const Scan = {
     });
     if(takeover.length){
       Prog.set('Using cover images ('+takeover.length+')', 0, takeover.length);
-      for(const m of takeover){ await Thumbs.del('tm'+m.id); m.thumbId = null; }
-      await Scan.thumbnails(takeover, true);
-      Thumbs._urls.clear();
+      /* Build the replacement first and only swap once it exists. Clearing the
+         old preview up front meant anything that failed to re-render was left
+         with a blank card instead of the render it already had. */
+      const swapped = [];
+      for(const m of takeover){
+        if(Prog.cancelled) break;
+        const probe = {id:m.id, rootId:m.rootId, path:m.path, isArchive:m.isArchive, archiveExt:m.archiveExt};
+        try{ await Scan.thumbOne(probe, Store.settings.thumbSize); }catch(e){ continue; }
+        if(!probe.thumbId) continue;                       // nothing usable, keep what we had
+        m.thumbId = probe.thumbId; m.thumbSrc = probe.thumbSrc; m.thumbFile = probe.thumbFile;
+        if(probe.bbox) m.bbox = probe.bbox;
+        if(probe.tris) m.tris = probe.tris;
+        Thumbs._urls.delete(m.thumbId);
+        swapped.push(m);
+      }
+      if(swapped.length) await DB.putMany('models', swapped);
+      Store.reindex();
     }
     if(Store.settings.thumbOnScan) await Scan.thumbnails(models);
 
