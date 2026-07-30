@@ -394,7 +394,7 @@ table.t .num{font-family:var(--mono);text-align:right;font-size:12px}
  * Copyright (C) 2026 magikh0e
  * License: GPL-3.0-or-later (https://www.gnu.org/licenses/gpl-3.0.html)
  */
-const APP_VERSION = '0.2.9';
+const APP_VERSION = '0.2.10';
 
 /* ============================================================
    U — utilities
@@ -2987,7 +2987,11 @@ const Detail = {
       if(f.g && f.g.timeMin) extras += '<span class="z">'+U.dur(f.g.timeMin)+'</span>';
       if(f.g && f.g.grams) extras += '<span class="z">'+U.num(f.g.grams,0)+'g</span>';
       return '<div class="filerow">'+ic+
-        '<span class="n" title="'+U.attr(f.path)+'">'+U.esc(f.path === m.path ? f.name : f.path.slice(m.path.length+1) || f.name)+'</span>'+
+        // Only strip the model path when the file is genuinely inside it. An
+        // archive sitting next to its unpacked folder has a path of
+        // "<model>.zip", and blindly slicing left the row labelled just "zip".
+        '<span class="n" title="'+U.attr(f.path)+'">'+U.esc(
+          f.path.startsWith(m.path + '/') ? f.path.slice(m.path.length + 1) : f.name)+'</span>'+
         extras+
         '<span class="ext '+cls+'">'+U.esc(f.ext)+'</span>'+
         '<span class="z" style="min-width:56px;text-align:right">'+U.bytes(f.size)+'</span>'+
