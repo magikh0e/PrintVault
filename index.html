@@ -529,6 +529,7 @@ const DB = {
   _req(r){ return new Promise((res,rej)=>{ r.onsuccess=()=>res(r.result); r.onerror=()=>rej(r.error); }); },
   get(store,id){ return DB.tx([store]).then(t=>DB._req(t.objectStore(store).get(id))); },
   all(store){ return DB.tx([store]).then(t=>DB._req(t.objectStore(store).getAll())); },
+  keys(store){ return DB.tx([store]).then(t=>DB._req(t.objectStore(store).getAllKeys())); },
   put(store,val){ return DB.tx([store],'readwrite').then(t=>DB._req(t.objectStore(store).put(val))); },
   /* Written in chunks rather than one giant transaction. A library with
      hundreds of thousands of files would otherwise queue every put into a
@@ -2347,6 +2348,14 @@ const Scan = {
       if(swapped.length) await DB.putMany('models', swapped);
       Store.reindex();
     }
+    /* A preview id whose image has gone renders as an empty card, so treat it
+       the same as having no preview at all. */
+    try{
+      const have = new Set(await DB.keys('thumbs'));
+      const dangling = models.filter(m=>m.thumbId && !have.has(m.thumbId));
+      for(const m of dangling) m.thumbId = null;
+      if(dangling.length) console.info('[PrintVault] '+dangling.length+' previews had lost their image, rebuilding');
+    }catch(e){}
     if(Store.settings.thumbOnScan) await Scan.thumbnails(models);
 
     /* --- 8. root stats --- */
@@ -5123,13 +5132,22 @@ const Settings = {
     }, 'Delete', true);
   },
 
+  /* Two things count as missing: no preview at all, and a preview id pointing
+     at an image that is no longer there. The second kind shows as an empty
+     card while still claiming to have a preview, so it never got rebuilt. */
   async regenAll(){
-    const missing = Store.models.filter(m=>!m.thumbId);
-    if(!missing.length) return Toast.ok('Every model already has a preview');
-    Prog.start('Rebuilding previews...');
-    await Scan.thumbnails(missing);
-    Prog.stop(); UI.render();
-    Toast.ok('Done, '+missing.filter(m=>m.thumbId).length+' of '+missing.length+' rendered');
+    Prog.start('Checking previews...');
+    let have;
+    try{ have = new Set(await DB.keys('thumbs')); }catch(e){ have = null; }
+    const missing = Store.models.filter(m=>!m.thumbId || (have && !have.has(m.thumbId)));
+    if(!missing.length){ Prog.stop(); return Toast.ok('Every model already has a preview'); }
+    const dangling = missing.filter(m=>m.thumbId).length;
+    for(const m of missing) m.thumbId = null;
+    Prog.set('Rebuilding '+missing.length+' previews...', 0, missing.length);
+    await Scan.thumbnails(missing, true);
+    Prog.stop(); Thumbs._urls.clear(); UI.render();
+    Toast.ok('Rebuilt '+missing.filter(m=>m.thumbId).length+' of '+missing.length+
+      (dangling ? ', including '+dangling+' that pointed at an image that had gone' : ''));
   },
 
   exportJSON(){
