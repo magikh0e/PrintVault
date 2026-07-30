@@ -4396,12 +4396,12 @@ const AutoTag = {
 
   clean(seg){
     let t = String(seg||'')
-      .replace(/[_+]+/g,' ')
+      .replace(/[_+]+/g,' ').replace(/(\S)-(\S)/g,'$1 $2')
       .replace(/\s*-\s*\d{5,}\s*$/,'')          // trailing thingiverse-style ids
       .replace(/\b\d{6,}\b/g,' ')                 // bare long numbers
       .replace(/\b(stl|stls|3mf|gcode|files?|model_files|fan art|no ams|multiparts?)\b/gi,' ')
       .replace(/\s+/g,' ').trim();
-    if(t.length < 3 || t.length > 28) return '';
+    if(t.length < 3 || t.length > 44) return '';
     if(/^\d+$/.test(t)) return '';
     if(AutoTag.SKIP.has(t.toLowerCase())) return '';
     const q = (Store.settings.quarantineDir||'').replace(/[_+]+/g,' ').trim().toLowerCase();
@@ -4409,13 +4409,30 @@ const AutoTag = {
     return t.replace(/\b\w/g, c=>c.toUpperCase());
   },
 
-  /* Tags for one model: the folders above it, nearest first, minus the
-     model's own folder, which is usually just the model name again. */
-  forModel(m){
+  /* How many models sit under each folder. A folder holding one model is that
+     model's own folder, and its name is the model name, which makes a useless
+     tag: it groups nothing. A folder holding several is a category, and that
+     is worth a tag. Counting is a far better test than guessing from the
+     length of the name, which is what this used to do. */
+  counts(){
+    const c = new Map();
+    for(const m of Store.models){
+      let d = U.dir(m.path);
+      while(d){ c.set(d, (c.get(d)||0)+1); d = U.dir(d); }
+    }
+    return c;
+  },
+
+  /* Tags for one model: the folders above it, nearest first. */
+  forModel(m, counts){
+    counts = counts || AutoTag.counts();
     const segs = U.dir(m.path).split('/').filter(Boolean);
     const out = [];
+    let acc = '';
     for(const seg of segs){
+      acc = acc ? acc + '/' + seg : seg;
       if(GENERIC_DIRS.has(seg.toLowerCase())) continue;
+      if((counts.get(acc)||0) < 2) continue;      // that model's own folder
       const t = AutoTag.clean(seg);
       if(t && !out.includes(t)) out.push(t);
     }
@@ -4424,9 +4441,10 @@ const AutoTag = {
 
   propose(){
     const rows = [];
+    const counts = AutoTag.counts();
     for(const m of Store.models){
       const have = new Set((m.tags||[]).map(t=>t.toLowerCase()));
-      const add = AutoTag.forModel(m).filter(t=>!have.has(t.toLowerCase()));
+      const add = AutoTag.forModel(m, counts).filter(t=>!have.has(t.toLowerCase()));
       if(add.length) rows.push({id:m.id, name:m.name, path:m.path, add});
     }
     return rows;
