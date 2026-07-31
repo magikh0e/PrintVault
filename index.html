@@ -4397,13 +4397,14 @@ const Monitor = {
 
     // match the file back to a model by its name, since that is all the
     // printer knows about it
-    const base = U.base(name).toLowerCase();
-    const file = Store.files.find(f=>f.name.toLowerCase() === base) ||
-                 Store.files.find(f=>U.stem(f.name).toLowerCase() === U.stem(base));
+    const base = U.base(name);
+    const key = base.toLowerCase();
+    const file = Store.files.find(f=>f.name.toLowerCase() === key) ||
+                 Store.files.find(f=>U.stem(f.name).toLowerCase() === U.stem(key));
     const model = file ? Store.model(file.modelId) : null;
 
     const rec = {
-      id: U.id('pt'), modelId: model ? model.id : '', modelName: model ? model.name : U.stem(base),
+      id: U.id('pt'), modelId: model ? model.id : '', modelName: model ? model.name : U.titleize(U.stem(base)),
       date: U.today(), result: cancelled ? 'fail' : 'success',
       printer: printer.name, grams: grams || null,
       timeMin: elapsed ? Math.round(elapsed/60) : null,
@@ -4416,14 +4417,15 @@ const Monitor = {
     // take it off the spool if one is marked in use
     const spool = Store.filaments.find(f=>f.inUse && (!f.printer || f.printer === printer.name));
     if(spool && grams){
-      spool.remainingG = Math.max(0, (spool.remainingG || 0) - grams);
+      // to a tenth, or repeated subtraction leaves 763.5999999999999 on the spool
+      spool.remainingG = Math.max(0, Math.round(((spool.remainingG || 0) - grams) * 10) / 10);
       rec.filamentId = spool.id; rec.material = spool.material || '';
       await Store.put('filaments', spool);
       await Store.put('prints', rec);
     }
     delete Monitor._job[printer.id];
     UI.render();
-    Toast.ok((cancelled ? 'Logged a stopped print' : 'Logged '+(model ? model.name : U.stem(base)))+
+    Toast.ok((cancelled ? 'Logged a stopped print' : 'Logged '+(model ? model.name : U.titleize(U.stem(base))))+
       ' on '+printer.name+(grams ? ', '+grams+'g' : '')+(spool && grams ? ' off '+spool.brand+' '+spool.material : ''));
   },
 
@@ -5103,7 +5105,11 @@ const Stats = {
 
     /* top lists */
     const cnt = new Map();
-    P.forEach(p=>cnt.set(p.modelId, (cnt.get(p.modelId)||0)+1));
+    P.forEach(p=>{
+      // a job started at the printer itself has no model, only a filename
+      const k = p.modelId || ('name:' + (p.modelName || '?'));
+      cnt.set(k, (cnt.get(k)||0)+1);
+    });
     const top = Array.from(cnt.entries()).sort((a,b)=>b[1]-a[1]).slice(0,8);
     const big = U.sortBy(M, m=>m.bytes||0, 'desc').slice(0,8);
     const byPrinter = new Map();
@@ -5114,8 +5120,11 @@ const Stats = {
     h += '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:14px">';
     h += '<div class="panel"><h3>'+I.print+' Most printed</h3>'+
       (top.length ? '<table class="t"><tbody>'+top.map(([id,n])=>{
-        const m = Store.model(id);
-        return '<tr><td>'+(m?'<a href="#" onclick="event.preventDefault();PV.Detail.open(\''+id+'\')">'+U.esc(m.name)+'</a>':'<span style="color:var(--dim2)">(removed)</span>')+
+        const m = id.indexOf('name:')===0 ? null : Store.model(id);
+        const label = id.indexOf('name:')===0 ? '<span style="color:var(--dim2)">'+U.esc(id.slice(5))+'</span>'
+          : (m ? '<a href="#" onclick="event.preventDefault();PV.Detail.open(\''+id+'\')">'+U.esc(m.name)+'</a>'
+             : '<span style="color:var(--dim2)">(removed)</span>');
+        return '<tr><td>'+label+
           '</td><td class="num">'+n+'&times;</td></tr>';
       }).join('')+'</tbody></table>' : '<div style="color:var(--dim2);font-size:12.5px">No prints logged yet.</div>')+'</div>';
 
