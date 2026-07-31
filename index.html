@@ -4349,6 +4349,7 @@ const Monitor = {
   _timer: null,
   state: {},          // printerId -> last status seen
   _job: {},           // printerId -> what we think is running
+  _busy: false,       // a poll is in flight; see tick()
 
   start(){
     if(!FS.printerStatus) return;                 // browser build
@@ -4360,6 +4361,14 @@ const Monitor = {
   stop(){ if(Monitor._timer){ clearInterval(Monitor._timer); Monitor._timer = null; } },
 
   async tick(){
+    // A poll can outlast the interval on a slow or busy printer, and two runs
+    // overlapping both saw the same job end and both logged it. One at a time.
+    if(Monitor._busy) return;
+    Monitor._busy = true;
+    try{ await Monitor._tick(); } finally { Monitor._busy = false; }
+  },
+
+  async _tick(){
     const printers = Store.printers.filter(p=>p.addr);
     if(!printers.length) return Monitor.stop();
     for(const p of printers){
@@ -4390,6 +4399,13 @@ const Monitor = {
     const job = Monitor._job[printer.id] || {};
     const name = job.filename || was.filename || '';
     if(!name) return;
+    /* Belt as well as braces: the same job must not be logged twice even if
+       this is reached again, which a restart mid-print or a stray tick could
+       do. Matched on printer, file and day rather than on a flag, so it holds
+       across a reload. */
+    const already = Store.prints.some(x=>x.auto && x.printer === printer.name &&
+      x.date === U.today() && (x.jobFile || '') === name);
+    if(already) return;
     const cancelled = now.state === 'cancelled' || now.state === 'error';
     const elapsed = Math.max(was.elapsed_s || 0, job.elapsed || 0);
     const mm = Math.max(was.filament_mm || 0, job.filament || 0);
@@ -4408,6 +4424,7 @@ const Monitor = {
       date: U.today(), result: cancelled ? 'fail' : 'success',
       printer: printer.name, grams: grams || null,
       timeMin: elapsed ? Math.round(elapsed/60) : null,
+      jobFile: name,   // what the printer called it, so the same job is not logged twice
       material: '', notes: (cancelled ? 'Stopped early ('+now.state+')' : 'Logged automatically from '+printer.name)+
         (now.message ? ': '+now.message : ''),
       auto: true
