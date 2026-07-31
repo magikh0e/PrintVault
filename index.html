@@ -144,6 +144,13 @@ input[type=checkbox]{width:auto;accent-color:var(--acc);cursor:pointer}
 .chk{display:flex;align-items:center;gap:8px;cursor:pointer;font-size:13px;padding:4px 0}
 
 /* ---------- toolbar ---------- */
+/* While things are selected the bar follows you down the page, so the action
+   you are part way through is never scrolled off. */
+.pv-bar.stick{position:sticky;top:0;z-index:30;background:var(--bg);
+  padding:8px 0 10px;margin-bottom:8px;box-shadow:0 10px 18px -14px rgba(0,0,0,.85)}
+.pv-bar.stick::before{content:'';position:absolute;left:-20px;right:-20px;top:0;bottom:0;
+  background:var(--bg);z-index:-1}
+@media(max-width:700px){.pv-bar.stick{top:0}}
 .pv-bar{display:flex;align-items:center;gap:9px;flex-wrap:wrap;margin-bottom:14px}
 .pv-bar h2{font-size:19px;margin-right:2px}
 .pv-bar .sp{flex:1}
@@ -2789,7 +2796,7 @@ const Library = {
     if(f.quick) crumbs.push(['View', f.quick, "PV.Library.filter('quick','"+f.quick+"')"]);
     if(f.q) crumbs.push(['Search', f.q, "PV.Library.clearSearch()"]);
 
-    let h = '<div class="pv-bar">'+
+    let h = '<div class="pv-bar'+(Library.sel.size?' stick':'')+'">'+
       '<button class="b g ico" onclick="PV.Library.toggleSide()" title="Toggle sidebar">'+I.menu+'</button>'+
       '<h2>'+(f.tag ? U.esc(f.tag) : f.coll ? U.esc(f.coll) : f.rootId ? U.esc((Store.root(f.rootId)||{}).name) : 'All Models')+'</h2>'+
       '<span class="cnt">'+all.length.toLocaleString()+(all.length===1?' model':' models')+'</span>'+
@@ -4457,11 +4464,55 @@ const Monitor = {
     Monitor.paint();
   },
 
-  /* Density is not reported, so grams come from the usual 1.24 g/cm3 for PLA
-     on a 1.75 mm filament. Close enough to be useful, and editable after. */
-  grams(mm){
+  /* Neither Moonraker nor OctoPrint reports mass, only how much filament went
+     through, so grams are worked out from length. Density is the part that
+     varies: ABS is about 16 percent lighter than PLA for the same length, so
+     using the spool's material rather than assuming PLA is worth the lookup. */
+  DENSITY: {pla:1.24, 'pla+':1.24, petg:1.27, pet:1.27, abs:1.04, asa:1.07, tpu:1.21, tpe:1.21,
+            nylon:1.14, pa:1.14, 'pa-cf':1.19, pc:1.20, hips:1.04, pva:1.23, 'pla-cf':1.29},
+  density(material){
+    const m = String(material||'').toLowerCase().replace(/[^a-z+]/g,'');
+    if(!m) return 1.24;
+    if(Monitor.DENSITY[m]) return Monitor.DENSITY[m];
+    // "PolyLite PETG" and the like: take the first family name that appears
+    const hit = Object.keys(Monitor.DENSITY).find(k=>k.length > 2 && m.includes(k));
+    return hit ? Monitor.DENSITY[hit] : 1.24;
+  },
+  grams(mm, material){
     const mm3 = mm * Math.PI * Math.pow(1.75/2, 2);
-    return Math.round((mm3 / 1000) * 1.24 * 10) / 10;
+    return Math.round((mm3 / 1000) * Monitor.density(material) * 10) / 10;
+  },
+
+  /* What a printer calls a job and what you called the model rarely match:
+     "Thunderstorm_v4_PLA_41m29s.gcode" against "Super Loud 6 Tone Whistle -
+     Thunderstorm V4". Exact filename matching misses that, but the shared
+     words are obvious. Match on those, and refuse to guess when it is close. */
+  STOP: new Set(['pla','petg','abs','asa','tpu','nylon','pc','hips','pva','cf','gf',
+    'gcode','bgcode','stl','3mf','obj','plate','print','printed','copy','final','new','old',
+    'the','and','for','with','v','mm','x','a','an','of','to','my']),
+  tokens(s){
+    return U.uniq(String(s||'').toLowerCase()
+      .replace(/\.[a-z0-9]{1,6}$/,'')                 // extension
+      .replace(/\d+h\d+m\d*s?/g,' ')             // 41m29s, 2h14m
+      .replace(/[^a-z0-9]+/g,' ')
+      .split(' ')
+      .filter(t=>t.length > 1 && !Monitor.STOP.has(t) && !/^\d+$/.test(t)));
+  },
+  guessModel(jobName){
+    const jt = Monitor.tokens(jobName);
+    if(jt.length < 2) return null;
+    const scored = Store.models.map(m=>{
+      const mt = Monitor.tokens(m.name);
+      if(!mt.length) return {m, score:0};
+      const shared = jt.filter(t=>mt.includes(t)).length;
+      return {m, score: shared / Math.min(jt.length, mt.length), shared};
+    }).filter(x=>x.score > 0).sort((a,b)=>b.score - a.score || b.shared - a.shared);
+    if(!scored.length) return null;
+    const best = scored[0], next = scored[1];
+    // needs to be a good match, and clearly better than the runner up
+    if(best.score < 0.5 || best.shared < 2) return null;
+    if(next && next.score > best.score - 0.15) return null;
+    return best.m;
   },
 
   async finish(printer, was, now){
@@ -4478,15 +4529,19 @@ const Monitor = {
     const cancelled = now.state === 'cancelled' || now.state === 'error';
     const elapsed = Math.max(was.elapsed_s || 0, job.elapsed || 0);
     const mm = Math.max(was.filament_mm || 0, job.filament || 0);
-    const grams = Monitor.grams(mm);
 
-    // match the file back to a model by its name, since that is all the
-    // printer knows about it
+    // the spool is found first, because its material sets the density
+    const spool = Store.filaments.find(f=>f.inUse && (!f.printer || f.printer === printer.name));
+    const grams = Monitor.grams(mm, spool && spool.material);
+
+    // Match the job back to a model. The filename is all the printer knows,
+    // so try it exactly first, then fall back to the words in it.
     const base = U.base(name);
     const key = base.toLowerCase();
     const file = Store.files.find(f=>f.name.toLowerCase() === key) ||
                  Store.files.find(f=>U.stem(f.name).toLowerCase() === U.stem(key));
-    const model = file ? Store.model(file.modelId) : null;
+    const guessed = file ? null : Monitor.guessModel(base);
+    const model = file ? Store.model(file.modelId) : guessed;
 
     const rec = {
       id: U.id('pt'), modelId: model ? model.id : '', modelName: model ? model.name : U.titleize(U.stem(base)),
@@ -4495,13 +4550,13 @@ const Monitor = {
       timeMin: elapsed ? Math.round(elapsed/60) : null,
       jobFile: name,   // what the printer called it, so the same job is not logged twice
       material: '', notes: (cancelled ? 'Stopped early ('+now.state+')' : 'Logged automatically from '+printer.name)+
+        (guessed ? ', matched to this model by name' : '')+
         (now.message ? ': '+now.message : ''),
       auto: true
     };
     await Store.put('prints', rec);
 
     // take it off the spool if one is marked in use
-    const spool = Store.filaments.find(f=>f.inUse && (!f.printer || f.printer === printer.name));
     if(spool && grams){
       // to a tenth, or repeated subtraction leaves 763.5999999999999 on the spool
       spool.remainingG = Math.max(0, Math.round(((spool.remainingG || 0) - grams) * 10) / 10);
@@ -4737,6 +4792,60 @@ const AutoTag = {
     return out.slice(0, 3);
   },
 
+  /* Names are titleized when a model is first indexed, so a library built
+     before a change to that keeps the old spelling: plus signs from downloads
+     stayed until something re-created the record. This offers to redo them,
+     and shows the list first, because a name is something you may have set
+     yourself and would not want quietly rewritten. */
+  tidyRows(){
+    const rows = [];
+    for(const m of Store.models){
+      const files = Store.modelFiles(m.id);
+      const loose = files.length === 1 && files[0].path === m.path;
+      const src = loose ? U.stem(U.base(m.path)) : (U.base(m.path) || '');
+      const want = U.titleize(src) || src;
+      /* Only when the stored name is the same words with the separators still
+         in it. That catches Working+to+the+Bone+ +Office+Skeleton and leaves
+         anything you typed yourself alone, rather than offering to overwrite
+         a name you chose with the folder it happens to live in. */
+      if(want && want !== m.name && U.titleize(m.name) === want)
+        rows.push({id:m.id, from:m.name, to:want});
+    }
+    return rows;
+  },
+  tidyNames(){
+    const rows = AutoTag._tidy = AutoTag.tidyRows();
+    if(!rows.length) return Toast.ok('Every name already reads the way it would today');
+    let h = '<p style="color:var(--dim);font-size:13px;line-height:1.65;margin:0 0 14px">'+
+      'Re-reads each name from the file or folder it came from. Anything you renamed yourself will show up '+
+      'here too, so uncheck those.</p>'+
+      '<div style="max-height:48vh;overflow:auto;border:1px solid var(--line);border-radius:8px">'+
+      rows.map((r,i)=>'<label class="chk" style="display:flex;gap:10px;align-items:flex-start;padding:8px 10px;'+
+        'border-top:1px solid var(--line);margin:0"><input type="checkbox" checked data-tn="'+i+'">'+
+        '<span style="flex:1;min-width:0;font-size:13px"><span style="color:var(--dim2);text-decoration:line-through">'+
+        U.esc(r.from)+'</span><br><b>'+U.esc(r.to)+'</b></span></label>').join('')+'</div>';
+    Modal.open('Tidy names ('+rows.length+')', h,
+      '<button class="b" onclick="PV.AutoTag.tidyNone()">Select none</button>'+
+      '<button class="b" onclick="PV.AutoTag.tidyAll()">Select all</button>'+
+      '<div class="sp"></div><button class="b" onclick="PV.Modal.back()">Cancel</button>'+
+      '<button class="b p" onclick="PV.AutoTag.tidyApply()">Rename</button>');
+  },
+  tidyAll(){ document.querySelectorAll('#modal [data-tn]').forEach(c=>c.checked=true); },
+  tidyNone(){ document.querySelectorAll('#modal [data-tn]').forEach(c=>c.checked=false); },
+  async tidyApply(){
+    const rows = AutoTag._tidy || [];
+    const picked = Array.from(document.querySelectorAll('#modal [data-tn]'))
+      .filter(c=>c.checked).map(c=>rows[+c.dataset.tn]).filter(Boolean);
+    const upd = [];
+    for(const r of picked){
+      const m = Store.model(r.id); if(!m) continue;
+      m.name = r.to; upd.push(m);
+    }
+    for(const m of upd) await Store.put('models', m);
+    Modal.close(); UI.render();
+    Toast.ok(upd.length ? 'Renamed '+upd.length+' model'+(upd.length===1?'':'s') : 'Nothing changed');
+  },
+
   propose(){
     const rows = [];
     const counts = AutoTag.counts();
@@ -4900,6 +5009,48 @@ const Dupes = {
     });
     return out.sort((a,b)=>b.waste - a.waste);
   },
+  msel: new Set(),
+  toggleModel(cb){ cb.checked ? Dupes.msel.add(cb.dataset.mid) : Dupes.msel.delete(cb.dataset.mid); UI.render(); },
+  clearModelSel(){ Dupes.msel.clear(); UI.render(); },
+  selectCopies(){
+    // the first in each group is the one being kept, so tick every other one
+    Dupes.modelGroups().forEach(g=>g.models.slice(1).forEach(m=>Dupes.msel.add(m.id)));
+    UI.render();
+  },
+  ignoreSelected(){
+    const ids = Array.from(Dupes.msel).filter(id=>Store.model(id));
+    if(!ids.length) return Toast.err('Nothing selected');
+    const byRoot = new Map();
+    for(const id of ids){
+      const m = Store.model(id);
+      const files = Store.modelFiles(m.id);
+      const isDir = !(files.length === 1 && files[0].path === m.path);
+      const path = isDir ? m.path : U.dir(m.path);
+      if(!path) continue;
+      if(!byRoot.has(m.rootId)) byRoot.set(m.rootId, []);
+      byRoot.get(m.rootId).push(path);
+    }
+    const total = Array.from(byRoot.values()).reduce((n,a)=>n+a.length, 0);
+    if(!total) return Toast.err('None of those sit in a folder that can be ignored on its own');
+    Modal.confirm('Stop indexing '+total+' folder'+(total===1?'':'s')+'?',
+      'Their files stay exactly where they are and simply stop being indexed, so the duplicate cards go away. '+
+      'Undo any of it in Settings under Indexed folders.<div class="mono" style="margin-top:8px;font-size:11px;'+
+      'color:var(--dim2);max-height:180px;overflow:auto;word-break:break-all">'+
+      Array.from(byRoot.entries()).map(([rid,paths])=>paths.map(p=>
+        U.esc((Store.root(rid)||{}).name||'')+'/'+U.esc(p)).join('<br>')).join('<br>')+'</div>',
+      async ()=>{
+        for(const [rid, paths] of byRoot){
+          const r = Store.root(rid); if(!r) continue;
+          r.excludes = U.uniq((r.excludes||[]).concat(paths));
+          await Store.put('roots', r);
+        }
+        Dupes.msel.clear();
+        Modal.close();
+        Toast.ok('Ignoring '+total+', reindexing');
+        await Scan.run(Array.from(byRoot.keys()));
+      }, 'Ignore them', true);
+  },
+
   async ignoreModel(id){
     const m = Store.model(id); if(!m) return;
     const r = Store.root(m.rootId); if(!r) return;
@@ -4988,6 +5139,8 @@ const Dupes = {
               '<span class="ext '+(i?'':'ok')+'">'+(i?'copy':'keep')+'</span>'+
               '<span class="p" title="'+U.attr(m.path)+'">'+U.esc(r.name||'')+'/'+U.esc(m.path)+'</span>'+
               '<span class="mono" style="color:var(--dim2);font-size:11px">'+(m.fileCount||0)+' file'+((m.fileCount===1)?'':'s')+' · '+U.bytes(m.bytes||0)+'</span>'+
+              (i ? '<label class="chk" style="margin:0 0 0 4px"><input type="checkbox" data-mid="'+U.attr(m.id)+'"'+
+                   (Dupes.msel.has(m.id)?' checked':'')+' onchange="PV.Dupes.toggleModel(this)"> </label>' : '')+
               '<button class="b g sm" onclick="PV.Detail.open(\''+m.id+'\')">Open</button>'+
               (i ? '<button class="b g sm" onclick="PV.Dupes.ignoreModel(\''+m.id+'\')">Ignore</button>' : '')+
               '</div>';
@@ -5279,7 +5432,9 @@ const Settings = {
     h += '<div class="panel"><h3>'+I.tag+' Tags</h3>'+
       '<p style="color:var(--dim);font-size:12.5px;line-height:1.65;margin:0 0 12px">Your folder names already say '+
       'what things are. This proposes tags from them and shows you the list before anything is written.</p>'+
-      '<button class="b" onclick="PV.AutoTag.open()">'+I.tag+' Suggest tags from folders</button></div>';
+      '<div style="display:flex;gap:8px;flex-wrap:wrap">'+
+        '<button class="b" onclick="PV.AutoTag.open()">'+I.tag+' Suggest tags from folders</button>'+
+        '<button class="b" onclick="PV.AutoTag.tidyNames()">'+I.edit+' Tidy model names</button></div></div>';
 
     h += '<div class="panel"><h3>'+I.gear+' Scanning</h3>'+
       '<label class="chk"><input type="checkbox" id="sThumb"'+(s.thumbOnScan?' checked':'')+' onchange="PV.Settings.set(\'thumbOnScan\',this.checked)"> '+
