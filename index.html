@@ -4099,6 +4099,12 @@ const Filament = {
         '<div class="f"><label>Nozzle temp (C)</label><input type="number" id="fTn" value="'+U.attr(f?f.tempNozzle:'')+'" placeholder="215"></div>'+
         '<div class="f"><label>Bed temp (C)</label><input type="number" id="fTb" value="'+U.attr(f?f.tempBed:'')+'" placeholder="60"></div>'+
       '</div>'+
+      (Store.printers.length ? '<div class="f"><label>Loaded in</label>'+
+        '<select id="fPrinter"><option value="">Any printer</option>'+
+        Store.printers.map(p=>'<option value="'+U.attr(p.name)+'"'+((f&&f.printer)===p.name?' selected':'')+'>'+
+          U.esc(p.name)+'</option>').join('')+'</select>'+
+        '<div class="hint">Which printer this spool is in. Automatic print logs take filament off the spool loaded '+
+        'in the printer that ran the job, so this matters once you have more than one.</div></div>' : '')+
       '<div class="f"><label>Notes</label><textarea id="fNotes" placeholder="Dries well at 50C for 6h. Prints best at 0.2 with 220 nozzle.">'+U.esc(f?f.notes||'':'')+'</textarea></div>'+
       (f ? '<label class="chk"><input type="checkbox" id="fArch"'+(f.archived?' checked':'')+'> Spool is finished (hide from lists)</label>' : ''),
       (f ? '<button class="b d" onclick="PV.Filament.del(\''+f.id+'\')">'+I.trash+' Delete</button>' : '')+
@@ -4112,7 +4118,8 @@ const Filament = {
       spoolWeightG: Modal.num('fWeight') || 1000, remainingG: Modal.num('fRem') || 0,
       costPerKg: Modal.num('fCost'), diameter: Modal.num('fDia') || 1.75,
       tempNozzle: Modal.num('fTn'), tempBed: Modal.num('fTb'),
-      notes: Modal.val('fNotes'), archived: id ? !!Modal.val('fArch') : false
+      notes: Modal.val('fNotes'), archived: id ? !!Modal.val('fArch') : false,
+      printer: Store.printers.length ? Modal.val('fPrinter') : ((id && Store.filament(id) || {}).printer || '')
     });
     await Store.put('filaments', f);
     Modal.close(); UI.render(); Toast.ok('Spool saved');
@@ -4392,9 +4399,18 @@ const Send = {
     // The app's own dialog, not window.confirm. A native confirm inside the
     // desktop shell can be suppressed, and it returns nothing when it is, so
     // the send quietly did not happen and said nothing about it.
+    /* A project 3mf is the usual thing to trip over: it was sliced, and it
+       carries the settings and a plate render, but "save project" does not
+       embed the toolpath. Only "export plate sliced file" does, and that is
+       what produces a .gcode.3mf. Saying so beats saying "not sliced". */
+    const proj = f.ext === '3mf';
     Modal.confirm('Send it anyway?',
-      '<b>'+U.esc(f.name)+'</b> has not been sliced, so the printer has nothing to run. '+
-      'Uploading it will put the file on the printer but it will not print.',
+      '<b>'+U.esc(f.name)+'</b> has no toolpath in it, so the printer has nothing to run.'+
+      (proj ? '<div style="margin-top:10px">A project file keeps your settings so you can reopen it in the slicer, '+
+        'but the gcode is not inside it. Use <b>Export plate sliced file</b> instead of <b>Save project</b>, '+
+        'which gives you a <span class="mono" style="font-size:12px">.gcode.3mf</span>, and that will send.</div>'
+       : '<div style="margin-top:10px">Slice it first, then send the sliced file.</div>')+
+      '<div style="margin-top:10px">Uploading anyway just puts the file on the printer.</div>',
       ()=>Send.upload(f, p, start), 'Send anyway');
   },
 
@@ -4531,7 +4547,9 @@ const Monitor = {
     const mm = Math.max(was.filament_mm || 0, job.filament || 0);
 
     // the spool is found first, because its material sets the density
-    const spool = Store.filaments.find(f=>f.inUse && (!f.printer || f.printer === printer.name));
+    // a spool that names this printer wins over one that names none
+    const spool = Store.filaments.find(f=>f.inUse && f.printer === printer.name) ||
+                  Store.filaments.find(f=>f.inUse && !f.printer);
     const grams = Monitor.grams(mm, spool && spool.material);
 
     // Match the job back to a model. The filename is all the printer knows,
@@ -4596,6 +4614,17 @@ const Monitor = {
 };
 
 const Queue = {
+  /* The queue knew what you meant to print and the printer knew how to receive
+     it, but the two had never been introduced. Opens the same Send dialog the
+     model window uses, with this item's model already chosen. */
+  send(id){
+    const q = Store.queue.find(x=>x.id === id); if(!q) return;
+    const m = Store.model(q.modelId);
+    if(!m) return Toast.err('That model is no longer in the library');
+    if(!FS.canSend) return Toast.err('Sending needs the desktop app');
+    Send.open(m.id);
+  },
+
   render(v){
     const pending = U.sortBy(Store.queue.filter(q=>q.status!=='done'),
       q=>({hi:0,md:1,lo:2}[q.priority||'md'])*1e13 + (q.addedAt||0)/1e6, 'asc');
@@ -4637,6 +4666,8 @@ const Queue = {
           (q.notes?' · '+U.esc(q.notes):'')+'</small></div>'+
         (q.status==='printing' ? '<span class="bdg acc">printing</span>' : '')+
         (m ? '<button class="b g sm ico" onclick="PV.Detail.open(\''+q.modelId+'\')" title="Open model">'+I.eye+'</button>' : '')+
+        (m && FS.canSend && Send.printers().length
+          ? '<button class="b g sm ico" onclick="PV.Queue.send(\''+q.id+'\')" title="Send to printer">'+I.print+'</button>' : '')+
         '<button class="b sm" onclick="PV.Queue.status(\''+q.id+'\',\''+(q.status==='printing'?'pending':'printing')+'\')">'+
           (q.status==='printing'?'Pause':'Start')+'</button>'+
         '<button class="b sm p" onclick="PV.Queue.done(\''+q.id+'\')">'+I.check+' Done</button>'+
@@ -5355,6 +5386,29 @@ const Stats = {
     P.forEach(p=>{ const k=p.printer||'(unspecified)';
       if(!byPrinter.has(k)) byPrinter.set(k,{n:0,ok:0,t:0});
       const x=byPrinter.get(k); x.n++; if(p.result==='success') x.ok++; x.t += p.timeMin||0; });
+
+    /* The slicer's estimate is stored with each model and the printer reports
+       what actually happened, so the two can finally be compared. Only counts
+       prints that were logged automatically and linked to a model, since a
+       figure typed by hand proves nothing about the slicer. */
+    const pairs = P.filter(p=>p.auto && p.modelId && p.timeMin)
+      .map(p=>{ const m = Store.model(p.modelId); const e = m && m.est;
+        return e && e.timeMin ? {est:e.timeMin, act:p.timeMin, name:m.name} : null; })
+      .filter(Boolean);
+    if(pairs.length >= 3){
+      const ratio = pairs.reduce((s,x)=>s + x.act / x.est, 0) / pairs.length;
+      const off = Math.round((ratio - 1) * 100);
+      const worst = pairs.slice().sort((a,b)=>Math.abs(b.act/b.est - 1) - Math.abs(a.act/a.est - 1))[0];
+      h += '<div class="panel" style="margin-bottom:14px"><h3>'+I.clock+' Slicer estimate against reality</h3>'+
+        '<p style="color:var(--dim);font-size:12.5px;line-height:1.65;margin:0 0 10px">Across '+pairs.length+
+        ' automatically logged print'+(pairs.length===1?'':'s')+' that matched a model.</p>'+
+        '<div class="stats" style="margin:0"><div class="stat"><div class="k">Prints run</div><div class="v">'+
+        (off === 0 ? 'on time' : (off > 0 ? off+'%' : Math.abs(off)+'%'))+'</div><div class="sub">'+
+        (off === 0 ? 'estimates are holding up' : (off > 0 ? 'longer than the slicer says' : 'quicker than the slicer says'))+
+        '</div></div>'+
+        '<div class="stat"><div class="k">Furthest out</div><div class="v" style="font-size:17px">'+U.esc(worst.name)+
+        '</div><div class="sub">'+U.dur(worst.est)+' estimated, '+U.dur(worst.act)+' actual</div></div></div></div>';
+    }
 
     h += '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:14px">';
     h += '<div class="panel"><h3>'+I.print+' Most printed</h3>'+
