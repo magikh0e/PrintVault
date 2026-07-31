@@ -759,7 +759,7 @@ function kindOf(ext){ return EXT_KIND[ext] || 'other'; }
 /* Bumped whenever the scanner learns to extract something new from a file.
    Records stamped with an older value get re-read on the next scan, so an app
    update does not silently skip files that were already indexed. */
-const META_V = 2;
+const META_V = 3;
 function isPrintable(ext){ const k=kindOf(ext); return k==='mesh'||k==='gcode'||k==='cad'; }
 
 /* Folder names that are containers or variants, not model names of their own */
@@ -2199,8 +2199,25 @@ const Scan = {
           const tail = bytes.length > 260000 ? dec.decode(bytes.subarray(bytes.length - 120000)) : '';
           const out = await Work.call({op:'gcode', head, tail});
           if(out.g && Object.keys(out.g).length){
-            delete out.g.thumbB64;   // the project already carries a plate render
+            delete out.g.thumbB64;   // the plate render below is the better one
             r.g = out.g;
+          }
+        }
+
+        /* The slicer renders the plate in colour and leaves it in the project.
+           That beats anything we can draw from the mesh, which comes out a
+           single flat colour, so a multi-material print looked monochrome. */
+        if(!r.thumbId){
+          const rank = n => /plate_\d+\.png$/i.test(n) ? 0
+                          : /^Metadata\/thumbnail/i.test(n) ? 1
+                          : /plate_no_light_\d+\.png$/i.test(n) ? 2
+                          : /plate_\d+_small\.png$/i.test(n) ? 3 : 9;
+          const img = entries.filter(e=>rank(e.name) < 9 && e.size > 512 && e.size < 8e6)
+                             .sort((a,b)=>rank(a.name) - rank(b.name) || b.size - a.size)[0];
+          if(img){
+            const bytes = await Archive.extractEntry(r, img);
+            const tb = await imgThumb(new Blob([bytes], {type:'image/png'}), Store.settings.thumbSize);
+            if(tb){ r.thumbId = 't'+r.id; await Thumbs.put(r.thumbId, tb); }
           }
         }
       }catch(e){ /* not a sliced project, or unreadable */ }
@@ -2323,13 +2340,16 @@ const Scan = {
        one. A cover you picked by hand is never overridden. */
     const takeover = models.filter(m=>{
       if(m.thumbSrc === 'user') return false;
+      // a plate render the slicer left inside a project beats a mesh render,
+      // which comes out one flat colour whatever the model is made of
+      if(m.thumbSrc === 'render' && Store.modelFiles(m.id).some(f=>f.thumbId)) return true;
       const best = Store.modelFiles(m.id)
         .filter(f=>f.kind === 'image' && imageScore(f.name) >= 100)
         .sort((a,b)=>imageScore(b.name)-imageScore(a.name) || b.size-a.size)[0];
       return best && m.thumbFile !== best.path;
     });
     if(takeover.length){
-      Prog.set('Using cover images ('+takeover.length+')', 0, takeover.length);
+      Prog.set('Updating previews ('+takeover.length+')', 0, takeover.length);
       /* Build the replacement first and only swap once it exists. Clearing the
          old preview up front meant anything that failed to re-render was left
          with a blank card instead of the render it already had. */
