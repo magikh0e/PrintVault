@@ -2977,21 +2977,32 @@ const Library = {
   bulk(){
     const ids = Array.from(Library.sel);
     Modal.open('Edit '+ids.length+' models',
-      '<div class="f"><label>Add tags (comma separated)</label><input id="bTags" placeholder="dragon, articulated, gift"></div>'+
-      '<div class="f"><label>Remove tags</label><input id="bRem" placeholder="wip, untested"></div>'+
-      '<div class="f"><label>Add to collection</label><input id="bColl" placeholder="Halloween 2026" list="collList">'+
-        '<datalist id="collList">'+Store.allCollections().map(c=>'<option value="'+U.attr(c[0])+'">').join('')+'</datalist></div>'+
+      '<div class="f"><label>Add tags</label>'+TagBox.html('bTags', [], Store.allTags(), 'Type to add')+'</div>'+
+      // removing offers only what the selected models actually carry, since
+      // suggesting a tag none of them have would do nothing
+      '<div class="f"><label>Remove tags</label>'+
+        TagBox.html('bRem', [], Library.selTags(ids), 'Type to remove')+'</div>'+
+      '<div class="f"><label>Add to collections</label>'+
+        TagBox.html('bColl', [], Store.allCollections(), 'Type to add')+'</div>'+
       '<div class="f"><label>Set creator</label><input id="bCreator" placeholder="leave blank to keep"></div>'+
       '<label class="chk"><input type="checkbox" id="bFav"> Mark all as favorite</label>',
       '<button class="b d" onclick="PV.Library.bulkClear()">Deselect all</button><div class="sp"></div>'+
       '<button class="b" onclick="PV.Modal.back()">Cancel</button>'+
       '<button class="b p" onclick="PV.Library.bulkApply()">Apply</button>');
   },
+  /* Counts across the selection, so the remove list is ordered by how many of
+     the chosen models carry each tag. */
+  selTags(ids){
+    const m = new Map();
+    ids.forEach(id=>{ const x = Store.model(id); if(!x) return;
+      (x.tags||[]).forEach(t=>m.set(t, (m.get(t)||0)+1)); });
+    return Array.from(m.entries()).sort((a,b)=>b[1]-a[1] || a[0].localeCompare(b[0]));
+  },
   bulkClear(){ Library.sel.clear(); Modal.close(); UI.render(); },
   async bulkApply(){
     const add = Modal.val('bTags').split(',').map(s=>s.trim()).filter(Boolean);
     const rem = Modal.val('bRem').split(',').map(s=>s.trim().toLowerCase()).filter(Boolean);
-    const coll = Modal.val('bColl').trim();
+    const colls = Modal.val('bColl').split(',').map(s=>s.trim()).filter(Boolean);
     const creator = Modal.val('bCreator').trim();
     const fav = Modal.val('bFav');
     const ids = Array.from(Library.sel);
@@ -3000,7 +3011,7 @@ const Library = {
       let tags = U.uniq((m.tags||[]).concat(add));
       if(rem.length) tags = tags.filter(t=>!rem.includes(t.toLowerCase()));
       m.tags = tags;
-      if(coll) m.collections = U.uniq((m.collections||[]).concat([coll]));
+      if(colls.length) m.collections = U.uniq((m.collections||[]).concat(colls));
       if(creator) m.creator = creator;
       if(fav) m.favorite = true;
       m.updatedAt = Date.now();
