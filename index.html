@@ -973,7 +973,7 @@ function pvWorkerMain(){
     return (n.length >= 12 && n.every(isFinite)) ? n : null;
   }
 
-  function parse3MFModel(text, maxTri){
+  function parse3MFModel(text, maxTri, colourFor){
     const objs = {};
     let i = 0;
     while((i = text.indexOf('<object', i)) >= 0){
@@ -1015,22 +1015,27 @@ function pvWorkerMain(){
 
     // follow component references down to the objects that actually hold meshes
     const leaves = [];
-    const walk = (oid, mat, depth)=>{
+    const walk = (oid, mat, depth, root)=>{
       if(depth > 8) return;
       const o = objs[oid]; if(!o) return;
-      if(o.ts.length) leaves.push({o, mat});
-      for(const c of o.comps) walk(c.oid, mul12(c.mat, mat), depth + 1);
+      if(o.ts.length) leaves.push({o, mat, root});
+      for(const c of o.comps) walk(c.oid, mul12(c.mat, mat), depth + 1, root);
     };
-    use.forEach(it=>walk(it.oid, it.mat, 0));
+    // The colour belongs to the top level object, which is what the slicer's
+    // own config keys on; components underneath inherit it.
+    use.forEach(it=>walk(it.oid, it.mat, 0, it.oid));
 
     let total = 0;
     leaves.forEach(l=>{ total += l.o.ts.length/3; });
     if(!total) throw new Error('No mesh in 3MF');
     const step = maxTri && total > maxTri ? Math.ceil(total/maxTri) : 1;
     const pos = new Float32Array(Math.ceil(total/step)*9);
+    const anyColour = colourFor && leaves.some(l=>colourFor(l.root));
+    const col = anyColour ? new Float32Array(pos.length) : null;
     let w = 0, t = 0;
     leaves.forEach(l=>{
       const o = l.o, M = l.mat;
+      const c = anyColour ? (colourFor(l.root) || [.78,.78,.80]) : null;
       for(let k=0;k<o.ts.length;k+=3, t++){
         if(t % step) continue;
         for(let v=0;v<3;v++){
@@ -1042,12 +1047,13 @@ function pvWorkerMain(){
             const nz = x*M[2] + y*M[5] + z*M[8] + M[11];
             x=nx; y=ny; z=nz;
           }
+          if(c){ col[w]=c[0]; col[w+1]=c[1]; col[w+2]=c[2]; }
           pos[w++]=x; pos[w++]=y; pos[w++]=z;
         }
       }
     });
     const p = pos.subarray(0, w);
-    return {pos:p, nrm: flatNormals(p), tris: total};
+    return {pos:p, nrm: flatNormals(p), tris: total, col: col ? col.subarray(0, w) : null};
   }
 
   async function parse3MF(buf, maxTri, wantThumb, forceMesh){
@@ -1059,6 +1065,40 @@ function pvWorkerMain(){
       cands.sort((a,b)=>b.usize - a.usize);
       if(cands.length){ try{ thumb = await zipRead(z, cands[0]); }catch(e){} }
     }
+    /* Which filament each object is printed in, and what colour that is.
+       Bambu Studio and OrcaSlicer keep the assignment in model_settings.config
+       against the top level object id, and the palette in project_settings.
+       Without this every object renders the same flat colour, which for a
+       multipart figure means losing the only thing that made it readable. */
+    let colourFor = null;
+    try{
+      const mse = z.entries.find(e=>/model_settings\.config$/i.test(e.name));
+      const pse = z.entries.find(e=>/project_settings\.config$/i.test(e.name));
+      if(mse && pse){
+        const ms = td.decode(await zipRead(z, mse));
+        let palette = null;
+        try{ palette = JSON.parse(td.decode(await zipRead(z, pse))).filament_colour; }catch(e){}
+        if(palette && palette.length){
+          const ext = {};
+          const ore = /<object\s+id="([^"]+)"([\s\S]*?)<\/object>/g;
+          let m;
+          while((m = ore.exec(ms))){
+            const e = m[2].match(/key="extruder"\s+value="(\d+)"/);
+            if(e) ext[m[1]] = +e[1];
+          }
+          const hex = h=>{
+            const t = String(h||'').replace('#','');
+            if(t.length < 6) return null;
+            return [parseInt(t.slice(0,2),16)/255, parseInt(t.slice(2,4),16)/255, parseInt(t.slice(4,6),16)/255];
+          };
+          const used = new Set(Object.values(ext));
+          // one filament for everything is not worth colouring: it would just
+          // repaint the whole model in that colour and lose the shading cue
+          if(used.size > 1) colourFor = oid => hex(palette[(ext[oid] || 1) - 1]);
+        }
+      }
+    }catch(e){}
+
     let mesh = null;
     const me = z.entries.find(e=>/3dmodel\.model$/i.test(e.name)) || z.entries.find(e=>/\.model$/i.test(e.name));
     if(me && (forceMesh || !thumb)){
@@ -1072,7 +1112,7 @@ function pvWorkerMain(){
           for(const p of parts){ try{ merged += td.decode(await zipRead(z, p)); }catch(e){} }
           if(merged) text = merged + text;
         }
-        mesh = parse3MFModel(text, maxTri);
+        mesh = parse3MFModel(text, maxTri, colourFor);
       }catch(e){}
     }
     // slicer project metadata
@@ -1169,6 +1209,7 @@ function pvWorkerMain(){
         if(r){
           out.pos = r.pos; out.nrm = r.nrm; out.tris = r.tris; out.bbox = bounds(r.pos);
           tr.push(r.pos.buffer, r.nrm.buffer);
+          if(r.col){ out.col = r.col; tr.push(r.col.buffer); }
         }
       } else if(op === 'gcode'){
         out = {g: parseGcode(head || '', tail || '')};
@@ -1193,6 +1234,7 @@ function pvWorkerMain(){
         if(!r || !r.pos.length) throw new Error('No geometry in ' + ent.name);
         out.pos = r.pos; out.nrm = r.nrm; out.tris = r.tris; out.bbox = bounds(r.pos);
         tr.push(r.pos.buffer, r.nrm.buffer);
+        if(r.col){ out.col = r.col; tr.push(r.col.buffer); }
       } else throw new Error('Unknown op ' + op);
       self.postMessage({id, ok:true, out}, tr);
     }catch(err){
@@ -1239,17 +1281,20 @@ const Render = {
     const gl = cv.getContext('webgl', {antialias:true, preserveDrawingBuffer:true, alpha:true});
     if(!gl) throw new Error('WebGL unavailable');
     const vs = gl.createShader(gl.VERTEX_SHADER);
-    gl.shaderSource(vs, 'attribute vec3 p;attribute vec3 n;uniform mat4 mvp;uniform mat4 mv;varying vec3 vn;varying float vd;'+
-      'void main(){vec4 e=mv*vec4(p,1.0);vn=normalize(mat3(mv)*n);vd=-e.z;gl_Position=mvp*vec4(p,1.0);}');
+    gl.shaderSource(vs, 'attribute vec3 p;attribute vec3 n;attribute vec3 c;uniform mat4 mvp;uniform mat4 mv;'+
+      'varying vec3 vn;varying float vd;varying vec3 vc;'+
+      'void main(){vec4 e=mv*vec4(p,1.0);vn=normalize(mat3(mv)*n);vc=c;vd=-e.z;gl_Position=mvp*vec4(p,1.0);}');
     gl.compileShader(vs);
     const fs = gl.createShader(gl.FRAGMENT_SHADER);
-    gl.shaderSource(fs, 'precision mediump float;varying vec3 vn;varying float vd;uniform vec3 base;uniform vec2 dr;'+
+    gl.shaderSource(fs, 'precision mediump float;varying vec3 vn;varying float vd;varying vec3 vc;'+
+      'uniform vec3 base;uniform vec2 dr;uniform float useVC;'+
       'void main(){vec3 N=normalize(vn);if(!gl_FrontFacing)N=-N;'+
+      'vec3 base2=mix(base,vc,useVC);'+
       'float k=max(dot(N,normalize(vec3(0.32,0.42,0.85))),0.0);'+
       'float f=max(dot(N,normalize(vec3(-0.5,-0.3,0.4))),0.0)*0.22;'+
       'float rim=pow(1.0-max(N.z,0.0),2.5)*0.30;'+
       'float dep=clamp((dr.y-vd)/max(dr.y-dr.x,0.0001),0.0,1.0);'+
-      'vec3 c=base*(0.24+0.70*k+f)+vec3(rim*0.9,rim*0.75,rim*0.6);'+
+      'vec3 c=base2*(0.24+0.70*k+f)+vec3(rim*0.9,rim*0.75,rim*0.6);'+
       'c*=mix(0.72,1.06,dep);gl_FragColor=vec4(c,1.0);}');
     gl.compileShader(fs);
     const pr = gl.createProgram();
@@ -1283,7 +1328,7 @@ const Render = {
     }
     return o;
   },
-  draw(pos, nrm, bbox, opt){
+  draw(pos, nrm, bbox, opt, vcol){
     opt = opt || {};
     const W = opt.size || 320, H = opt.height || Math.round(W * 0.75);
     const gl = Render.init(W, H);
@@ -1315,17 +1360,25 @@ const Render = {
       return b;
     };
     const b1 = put('p', pos, 3), b2 = put('n', nrm, 3);
+    // Per-vertex colours come from a sliced project that says which filament
+    // each object uses. Without them everything falls back to one flat colour.
+    const useVC = !!(vcol && vcol.length === pos.length);
+    let b3 = null;
+    const cloc = gl.getAttribLocation(pr, 'c');
+    if(useVC) b3 = put('c', vcol, 3);
+    else if(cloc >= 0){ gl.disableVertexAttribArray(cloc); gl.vertexAttrib3f(cloc, 1, 1, 1); }
+    gl.uniform1f(gl.getUniformLocation(pr,'useVC'), useVC ? 1 : 0);
     gl.uniformMatrix4fv(gl.getUniformLocation(pr,'mvp'), false, mvp);
     gl.uniformMatrix4fv(gl.getUniformLocation(pr,'mv'), false, view);
     const col = opt.color || [1.0, 0.545, 0.24];
     gl.uniform3f(gl.getUniformLocation(pr,'base'), col[0], col[1], col[2]);
     gl.uniform2f(gl.getUniformLocation(pr,'dr'), dist - rad, dist + rad);
     gl.drawArrays(gl.TRIANGLES, 0, pos.length/3);
-    gl.deleteBuffer(b1); gl.deleteBuffer(b2);
+    gl.deleteBuffer(b1); gl.deleteBuffer(b2); if(b3) gl.deleteBuffer(b3);
     return Render._cv;
   },
-  async toBlob(pos, nrm, bbox, opt){
-    Render.draw(pos, nrm, bbox, opt);
+  async toBlob(pos, nrm, bbox, opt, vcol){
+    Render.draw(pos, nrm, bbox, opt, vcol);
     return await new Promise(res=>Render._cv.toBlob(res, 'image/webp', 0.86));
   },
   canvas(){ return Render._cv; }
@@ -2450,7 +2503,7 @@ const Scan = {
               m.thumbId=id; m.thumbSrc='archive'; return m; }
           }
           if(out.pos && out.pos.length >= 9 && out.bbox){
-            const blob = await Render.toBlob(out.pos, out.nrm, out.bbox, {size});
+            const blob = await Render.toBlob(out.pos, out.nrm, out.bbox, {size}, out.col);
             if(blob){ const id='tm'+m.id; await Thumbs.put(id, blob);
               m.thumbId=id; m.thumbSrc='archive'; m.bbox=out.bbox; m.tris=out.tris; return m; }
           }
@@ -2473,7 +2526,7 @@ const Scan = {
           if(t){ const id='tm'+m.id; await Thumbs.put(id, t); m.thumbId=id; m.thumbSrc='embedded'; return m; }
         }
         if(out.pos && out.pos.length >= 9 && out.bbox){
-          const blob = await Render.toBlob(out.pos, out.nrm, out.bbox, {size});
+          const blob = await Render.toBlob(out.pos, out.nrm, out.bbox, {size}, out.col);
           if(blob){ const id='tm'+m.id; await Thumbs.put(id, blob); m.thumbId=id; m.thumbSrc='render'; m.bbox=out.bbox; m.tris=out.tris; return m; }
         }
       }catch(e){ /* unparseable mesh */ }
@@ -3665,7 +3718,7 @@ const Viewer = {
       const {buf, ext, size} = await Viewer.bytesFor(item);
       const out = await Work.call({op:'mesh', buf, ext, maxTri:900000, needMesh:true}, [buf]);
       if(!out.pos || !out.pos.length) throw new Error('No mesh geometry found in this file');
-      Viewer.data = {pos:out.pos, nrm:out.nrm, bbox:out.bbox, tris:out.tris,
+      Viewer.data = {pos:out.pos, nrm:out.nrm, bbox:out.bbox, tris:out.tris, col:out.col,
         file:{id:item.fileId, modelId:item.modelId, name:item.name, size:size}};
       Viewer.az=-52; Viewer.el=26; Viewer.zoom=1;
       Viewer.mount();
@@ -3722,13 +3775,13 @@ const Viewer = {
     const d = Viewer.data; if(!d) return;
     const dark = document.documentElement.getAttribute('data-theme') !== 'light';
     Render.draw(d.pos, d.nrm, d.bbox, {size:Viewer.w, height:Viewer.h, az:Viewer.az, el:Viewer.el, zoom:Viewer.zoom,
-      bg: dark ? [0.055,0.063,0.078] : [0.94,0.95,0.97]});
+      bg: dark ? [0.055,0.063,0.078] : [0.94,0.95,0.97]}, d.col);
   },
   reset(){ Viewer.az=-52; Viewer.el=26; Viewer.zoom=1; Viewer.paint(); },
   async useAsCover(){
     const d = Viewer.data; if(!d) return;
     const m = Store.model(d.file.modelId); if(!m) return Toast.err('No model for this file');
-    const blob = await Render.toBlob(d.pos, d.nrm, d.bbox, {size:Store.settings.thumbSize, az:Viewer.az, el:Viewer.el, zoom:Viewer.zoom});
+    const blob = await Render.toBlob(d.pos, d.nrm, d.bbox, {size:Store.settings.thumbSize, az:Viewer.az, el:Viewer.el, zoom:Viewer.zoom}, d.col);
     if(!blob) return Toast.err('Render failed');
     const id = 'tm'+m.id;
     await Thumbs.put(id, blob);
