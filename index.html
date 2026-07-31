@@ -4123,9 +4123,15 @@ const PRIOS = [['hi','High'],['md','Normal'],['lo','Someday']];
 const Send = {
   /* Sliced files first, since those are what a printer can actually run.
      Then project files, then plain meshes for the slicer. */
+  /* A .gcode.3mf saved out of Bambu Studio or Creality Print is a sliced job,
+     not a model, and the scanner already knows: it found the gcode inside and
+     kept its settings. So it ranks with the sliced files and does not get
+     warned about, which was making a perfectly printable file look wrong. */
+  sliced(f){ return f.kind === 'gcode' || (f.ext === '3mf' && f.g && Object.keys(f.g).length); },
   candidates(m){
     const files = Store.modelFiles(m.id);
-    const rank = f => f.kind === 'gcode' ? 0 : f.ext === '3mf' ? 1 : ['stl','obj'].includes(f.ext) ? 2 : 9;
+    const rank = f => f.kind === 'gcode' ? 0 : Send.sliced(f) ? 1
+                    : f.ext === '3mf' ? 2 : ['stl','obj'].includes(f.ext) ? 3 : 9;
     return files.filter(f=>rank(f) < 9).sort((a,b)=>rank(a)-rank(b) || (b.size||0)-(a.size||0));
   },
   printers(){ return Store.printers.filter(p=>p.addr); },
@@ -4140,7 +4146,7 @@ const Send = {
     const opts = files.map((f,i)=>'<option value="'+U.attr(f.id)+'"'+(i?'':' selected')+'>'+
       U.esc(f.path === m.path ? f.name : f.path)+'  ('+U.bytes(f.size)+')</option>').join('');
     const prs = Send.printers();
-    const sliced = files.filter(f=>f.kind === 'gcode');
+    const sliced = files.filter(Send.sliced);
 
     let h = '<div class="f"><label>File</label><select id="sndFile">'+opts+'</select>'+
       '<div class="hint">Sliced gcode is listed first. A printer can only run gcode, a slicer takes any of these.</div></div>';
@@ -4186,7 +4192,7 @@ const Send = {
     const f = Send._file(); if(!f) return;
     const p = Store.printer(Modal.val('sndPrinter'));
     if(!p || !p.addr) return Toast.err('That printer has no address');
-    if(f.kind !== 'gcode' && !confirm(f.name+' is not sliced gcode. Send it anyway?')) return;
+    if(!Send.sliced(f) && !confirm(f.name+' has not been sliced, so the printer has nothing to run. Send it anyway?')) return;
     Prog.start('Sending '+f.name+' to '+p.name+'...');
     try{
       await FS.sendToPrinter(f.rootId, f.path, p, start);
