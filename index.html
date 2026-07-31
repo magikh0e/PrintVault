@@ -282,6 +282,24 @@ table.t .num{font-family:var(--mono);text-align:right;font-size:12px}
 .jobbar .pc{font-variant-numeric:tabular-nums;color:var(--dim)}
 .jobbar .lf{color:var(--dim2)}
 @media(max-width:700px){.jobbar .f{max-width:120px}.jobbar .bar{width:70px}}
+.tagbox{position:relative;border:1px solid var(--line2);border-radius:9px;background:var(--bg2);
+  padding:6px 8px 7px;display:flex;flex-wrap:wrap;gap:6px;align-items:center;min-height:42px}
+.tagbox:focus-within{border-color:var(--acc)}
+.tagbox .chips{display:contents}
+.tagbox .chip{display:inline-flex;align-items:center;gap:6px;background:var(--bg3);
+  border:1px solid var(--line2);border-radius:999px;padding:3px 5px 3px 11px;font-size:12.5px;white-space:nowrap}
+.tagbox .chip button{background:none;border:0;color:var(--dim2);cursor:pointer;font-size:15px;
+  line-height:1;padding:0 4px;border-radius:999px}
+.tagbox .chip button:hover{color:var(--bad);background:var(--bg2)}
+.tagbox .tbi{flex:1;min-width:120px;background:none;border:0;outline:0;color:var(--txt);
+  font:inherit;font-size:13.5px;padding:4px 2px}
+.tbdrop{display:none;position:absolute;left:-1px;right:-1px;top:calc(100% + 4px);z-index:40;
+  background:var(--bg2);border:1px solid var(--line2);border-radius:9px;overflow:hidden;
+  box-shadow:0 14px 34px -12px rgba(0,0,0,.7);max-height:236px;overflow-y:auto}
+.tbdrop.on{display:block}
+.tbdrop button{display:block;width:100%;text-align:left;background:none;border:0;color:var(--txt);
+  font:inherit;font-size:13.5px;padding:8px 12px;cursor:pointer}
+.tbdrop button:hover,.tbdrop button.on{background:var(--bg3);color:var(--acc)}
 .filerow{display:flex;align-items:center;gap:9px;padding:7px 10px;background:var(--bg2);font-size:12.5px}
 .filerow:hover{background:var(--bg3)}
 .filerow svg{width:15px;height:15px;flex:0 0 auto;color:var(--dim2)}
@@ -708,6 +726,7 @@ const Modal = {
       (footerHtml ? '<div class="pv-mf">'+footerHtml+'</div>' : '');
     ovl.classList.add('on');
     if(!back) ovl.scrollTop = 0;
+    TagBox.wire(m);
     const first = m.querySelector('input:not([type=hidden]),textarea,select');
     if(first) setTimeout(()=>first.focus(),40);
   },
@@ -717,6 +736,8 @@ const Modal = {
     const m = document.getElementById('modal'), ovl = document.getElementById('ovl');
     m.className = prev.cls;
     m.innerHTML = prev.html;
+    m.querySelectorAll('.tagbox[data-live]').forEach(b=>b.removeAttribute('data-live'));
+    TagBox.wire(m);
     Modal._title = prev.title;
     ovl.scrollTop = prev.scroll || 0;
   },
@@ -3105,7 +3126,6 @@ const Detail = {
 
   edit(){
     const m = Store.model(Detail.cur); if(!m) return;
-    const tagList = Store.allTags().map(t=>'<option value="'+U.attr(t[0])+'">').join('');
     Modal.open('Edit: '+m.name,
       '<div class="f"><label>Name</label><input id="eName" value="'+U.attr(m.name)+'"></div>'+
       '<div class="fr">'+
@@ -3115,11 +3135,9 @@ const Detail = {
           '<option value="CC BY-NC-SA 4.0"><option value="CC0 / Public Domain"><option value="Personal use only"><option value="Commercial licensed"></datalist></div>'+
       '</div>'+
       '<div class="f"><label>Source URL</label><input id="eSource" value="'+U.attr(m.source||'')+'" placeholder="https://www.printables.com/model/..."></div>'+
-      '<div class="f"><label>Tags (comma separated)</label><input id="eTags" value="'+U.attr((m.tags||[]).join(', '))+'" list="tagList">'+
-        '<datalist id="tagList">'+tagList+'</datalist>'+
+      '<div class="f"><label>Tags</label>'+TagBox.html('eTags', m.tags||[], Store.allTags(), 'Type to add, Enter to confirm')+
         '<div class="hint">Free-form. Try function ("bracket", "organizer"), style ("articulated"), or status ("tested", "needs supports").</div></div>'+
-      '<div class="f"><label>Collections (comma separated)</label><input id="eColl" value="'+U.attr((m.collections||[]).join(', '))+'" list="collList2">'+
-        '<datalist id="collList2">'+Store.allCollections().map(c=>'<option value="'+U.attr(c[0])+'">').join('')+'</datalist></div>'+
+      '<div class="f"><label>Collections</label>'+TagBox.html('eColl', m.collections||[], Store.allCollections(), 'Type to add')+'</div>'+
       '<div class="f"><label>Notes</label><textarea id="eNotes" placeholder="Print orientation, support settings, what went wrong last time...">'+U.esc(m.notes||'')+'</textarea></div>',
       '<button class="b" onclick="PV.Modal.back()">Cancel</button>'+
       '<button class="b p" onclick="PV.Detail.saveEdit()">Save</button>');
@@ -4114,6 +4132,105 @@ const Filament = {
    Queue — what to print next
    ============================================================ */
 const PRIOS = [['hi','High'],['md','Normal'],['lo','Someday']];
+/* ============================================================
+   TagBox — chips with autocomplete, for tags and collections
+
+   A comma separated field with a datalist looks like autocomplete but is not:
+   the browser matches the whole field, so once you have typed one tag it
+   stops suggesting anything. This keeps the same hidden field so saving is
+   unchanged, and puts a proper editor on top of it.
+   ============================================================ */
+const TagBox = {
+  _n: 0,
+  /* `all` is [[name,count],...] as returned by Store.allTags/allCollections */
+  html(id, values, all, placeholder){
+    const uid = 'tb' + (++TagBox._n);
+    TagBox['_d' + uid] = all.map(a => a[0]);
+    return '<div class="tagbox" id="' + uid + '" data-for="' + id + '">' +
+      '<div class="chips"></div>' +
+      '<input class="tbi" type="text" autocomplete="off" spellcheck="false" placeholder="' + U.attr(placeholder || 'Type to add') + '">' +
+      '<div class="tbdrop"></div>' +
+      '<input type="hidden" id="' + id + '" value="' + U.attr((values || []).join(', ')) + '">' +
+      '</div>';
+  },
+
+  /* Call once the markup is in the DOM. */
+  wire(root){
+    (root || document).querySelectorAll('.tagbox:not([data-live])').forEach(box=>{
+      box.setAttribute('data-live', '1');
+      const hidden = box.querySelector('input[type=hidden]');
+      const input = box.querySelector('.tbi');
+      const chips = box.querySelector('.chips');
+      const drop = box.querySelector('.tbdrop');
+      const known = TagBox['_d' + box.id] || [];
+      let list = (hidden.value || '').split(',').map(s=>s.trim()).filter(Boolean);
+      let sel = -1;
+
+      const sync = ()=>{
+        hidden.value = list.join(', ');
+        chips.innerHTML = list.map((t,i)=>'<span class="chip">' + U.esc(t) +
+          '<button type="button" data-i="' + i + '" aria-label="Remove ' + U.attr(t) + '">&times;</button></span>').join('');
+      };
+      const close = ()=>{ drop.innerHTML = ''; drop.classList.remove('on'); sel = -1; };
+      const add = t=>{
+        t = String(t || '').trim().replace(/,+$/, '');
+        if(t && !list.some(x=>x.toLowerCase() === t.toLowerCase())) list.push(t);
+        input.value = ''; sync(); close(); input.focus();
+      };
+      const open = ()=>{
+        const q = input.value.trim().toLowerCase();
+        const taken = new Set(list.map(x=>x.toLowerCase()));
+        const hits = known.filter(t=>!taken.has(t.toLowerCase()) && (!q || t.toLowerCase().includes(q)))
+          .sort((a,b)=>{
+            // things that start with what you typed come first
+            const as = a.toLowerCase().startsWith(q) ? 0 : 1, bs = b.toLowerCase().startsWith(q) ? 0 : 1;
+            return as - bs || a.localeCompare(b);
+          }).slice(0, 8);
+        if(!hits.length) return close();
+        drop.innerHTML = hits.map((t,i)=>'<button type="button" data-t="' + U.attr(t) + '"' +
+          (i === sel ? ' class="on"' : '') + '>' + U.esc(t) + '</button>').join('');
+        drop.classList.add('on');
+      };
+
+      chips.addEventListener('click', e=>{
+        const b = e.target.closest('button[data-i]'); if(!b) return;
+        list.splice(+b.dataset.i, 1); sync();
+      });
+      drop.addEventListener('mousedown', e=>{           // before blur closes it
+        const b = e.target.closest('button[data-t]'); if(!b) return;
+        e.preventDefault(); add(b.dataset.t);
+      });
+      input.addEventListener('input', ()=>{ sel = -1; open(); });
+      input.addEventListener('focus', open);
+      input.addEventListener('blur', ()=>setTimeout(close, 120));
+      input.addEventListener('keydown', e=>{
+        const opts = Array.from(drop.querySelectorAll('button'));
+        if(e.key === 'ArrowDown' || e.key === 'ArrowUp'){
+          if(!opts.length) return;
+          e.preventDefault();
+          sel = (sel + (e.key === 'ArrowDown' ? 1 : -1) + opts.length) % opts.length;
+          opts.forEach((o,i)=>o.classList.toggle('on', i === sel));
+          return;
+        }
+        if(e.key === 'Enter' || e.key === ','){
+          e.preventDefault();
+          add(sel >= 0 && opts[sel] ? opts[sel].dataset.t : input.value);
+          return;
+        }
+        if(e.key === 'Escape' && drop.classList.contains('on')){ e.preventDefault(); close(); return; }
+        // backspace on an empty box takes the last chip off
+        if(e.key === 'Backspace' && !input.value && list.length){ list.pop(); sync(); }
+      });
+      // typing a name and pressing Save should not lose it
+      const form = box.closest('#modal') || document;
+      form.addEventListener('click', e=>{
+        if(e.target.closest('button.p') && input.value.trim()) add(input.value);
+      }, true);
+      sync();
+    });
+  }
+};
+
 /* ============================================================
    Send — hand a file to a slicer, or upload it to a printer
 
@@ -5451,7 +5568,7 @@ async function checkPerms(){
   }
 })();
 
-window.PV = {U, I, DB, Store, Toast, Prog, Modal, FS, Scan, Meta, Send, AutoTag, Monitor, Render, Thumbs, Work,
+window.PV = {U, I, DB, Store, Toast, Prog, Modal, FS, Scan, Meta, Send, AutoTag, Monitor, TagBox, Render, Thumbs, Work,
   UI, Library, Detail, Viewer, Archive, Prints, Filament, Queue, Dupes, Stats, Settings, APP_VERSION};
 
 
