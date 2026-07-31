@@ -3158,7 +3158,7 @@ const Detail = {
           '<option value="CC BY-NC-SA 4.0"><option value="CC0 / Public Domain"><option value="Personal use only"><option value="Commercial licensed"></datalist></div>'+
       '</div>'+
       '<div class="f"><label>Source URL</label><input id="eSource" value="'+U.attr(m.source||'')+'" placeholder="https://www.printables.com/model/..."></div>'+
-      '<div class="f"><label>Tags</label>'+TagBox.html('eTags', m.tags||[], Store.allTags(), 'Type to add, Enter to confirm')+
+      '<div class="f"><label>Tags</label>'+TagBox.html('eTags', m.tags||[], Store.allTags(), 'Type to add')+
         '<div class="hint">Free-form. Try function ("bracket", "organizer"), style ("articulated"), or status ("tested", "needs supports").</div></div>'+
       '<div class="f"><label>Collections</label>'+TagBox.html('eColl', m.collections||[], Store.allCollections(), 'Type to add')+'</div>'+
       '<div class="f"><label>Notes</label><textarea id="eNotes" placeholder="Print orientation, support settings, what went wrong last time...">'+U.esc(m.notes||'')+'</textarea></div>',
