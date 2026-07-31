@@ -4188,11 +4188,24 @@ const Send = {
     }catch(e){ Toast.err(e.message || String(e)); }
   },
 
-  async toPrinter(start){
-    const f = Send._file(); if(!f) return;
+  /* Read the choices before anything else opens, because a dialog on top
+     replaces the DOM these come from. */
+  toPrinter(start){
+    const f = Send._file();
+    if(!f) return Toast.err('Pick a file to send first');
     const p = Store.printer(Modal.val('sndPrinter'));
-    if(!p || !p.addr) return Toast.err('That printer has no address');
-    if(!Send.sliced(f) && !confirm(f.name+' has not been sliced, so the printer has nothing to run. Send it anyway?')) return;
+    if(!p || !p.addr) return Toast.err('That printer has no address. Add one under Settings, Printers.');
+    if(Send.sliced(f)) return Send.upload(f, p, start);
+    // The app's own dialog, not window.confirm. A native confirm inside the
+    // desktop shell can be suppressed, and it returns nothing when it is, so
+    // the send quietly did not happen and said nothing about it.
+    Modal.confirm('Send it anyway?',
+      '<b>'+U.esc(f.name)+'</b> has not been sliced, so the printer has nothing to run. '+
+      'Uploading it will put the file on the printer but it will not print.',
+      ()=>Send.upload(f, p, start), 'Send anyway');
+  },
+
+  async upload(f, p, start){
     Prog.start('Sending '+f.name+' to '+p.name+'...');
     try{
       await FS.sendToPrinter(f.rootId, f.path, p, start);
@@ -4200,7 +4213,8 @@ const Send = {
       Toast.ok(start ? 'Sent and started on '+p.name : 'Uploaded to '+p.name);
     }catch(e){
       Prog.stop();
-      Toast.err('Send failed: '+(e.message || e));
+      console.error('[PrintVault] send failed', e);
+      Toast.err('Send failed: '+(e && e.message || e || 'no reason given'));
     }
   }
 };
