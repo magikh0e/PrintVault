@@ -440,7 +440,10 @@ const U = {
   base(path){ const i=path.lastIndexOf('/'); return i<0?path:path.slice(i+1); },
   dir(path){ const i=path.lastIndexOf('/'); return i<0?'':path.slice(0,i); },
   stem(name){ const i=name.lastIndexOf('.'); return i<0?name:name.slice(0,i); },
-  titleize(s){ return String(s||'').replace(/[_\-]+/g,' ').replace(/\s+/g,' ').trim(); },
+  /* Downloads arrive with the spaces already mangled: Thingiverse and
+     Printables hand you Super+Loud+6+Tone+Whistle+ +Thunderstorm+V4. Plus
+     signs read as spaces here for the same reason underscores do. */
+  titleize(s){ return String(s||'').replace(/[_+\-]+/g,' ').replace(/\s+/g,' ').trim(); },
   debounce(fn,ms){ let t; return function(){ const a=arguments,c=this; clearTimeout(t); t=setTimeout(()=>fn.apply(c,a),ms||200); }; },
   sortBy(arr,key,dir){ const d=dir==='asc'?1:-1;
     return arr.slice().sort((a,b)=>{ const x=key(a), y=key(b);
@@ -596,7 +599,8 @@ const Store = {
     hashOnScan:false, thumbOnScan:true, thumbSize:320, currency:'$',
     skipDirs:'node_modules,.git,.svn,$RECYCLE.BIN,System Volume Information,.thumbnails',
     defaultPrinter:'', costPerHour:0.15, lastScan:0,
-    dupeAction:'quarantine', quarantineDir:'_PrintVault_quarantine', keepPrefer:''
+    dupeAction:'quarantine', quarantineDir:'_PrintVault_quarantine', keepPrefer:'',
+    autoBackup:'weekly', autoBackupAt:0, autoBackupSig:'', autoBackups:[]
   },
   _subs:[],
   _idx:{ models:new Map(), files:new Map() },
@@ -2076,6 +2080,7 @@ const Scan = {
       Store.reindex(); UI.render();
     }
     Toast.ok('Scan done: '+added+' new, '+updated+' updated, '+removed+' removed');
+    AutoBackup.run();
   },
 
   async _one(root, report){
@@ -4133,6 +4138,70 @@ const Filament = {
    ============================================================ */
 const PRIOS = [['hi','High'],['md','Normal'],['lo','Someday']];
 /* ============================================================
+   AutoBackup — a copy of what you typed, without being asked
+
+   Model files are safe on disk whatever happens. Tags, notes, ratings and
+   print history live only in the local database, and that has been lost
+   before. This writes the same JSON the Export button produces into the
+   library folder itself, so a backup is sitting next to the thing it
+   describes rather than in a Downloads folder nobody remembers.
+   ============================================================ */
+const AutoBackup = {
+  DIR: '_PrintVault_backups',
+  KEEP: 5,
+  EVERY: {off:0, daily:864e5, weekly:6048e5},
+
+  /* Cheap stand-in for "has anything changed": if this matches the last
+     backup, writing another copy of the same thing is just noise. */
+  signature(){
+    const n = a => a.length;
+    const touched = Store.models.reduce((t,m)=>Math.max(t, m.updatedAt||0), 0);
+    return [n(Store.models), n(Store.prints), n(Store.filaments), n(Store.printers),
+            n(Store.queue), n(Store.parked), touched].join('|');
+  },
+
+  due(){
+    const s = Store.settings;
+    const every = AutoBackup.EVERY[s.autoBackup || 'weekly'] || 0;
+    if(!every) return false;
+    if(!Store.roots.length) return false;                     // nowhere to put it
+    if(AutoBackup.signature() === s.autoBackupSig) return false;
+    return Date.now() - (s.autoBackupAt || 0) >= every;
+  },
+
+  async run(force){
+    if(!force && !AutoBackup.due()) return null;
+    const root = Store.roots[0];
+    if(!root) return null;
+    if(!FS.writeFile) return null;                            // browser too old
+    const name = 'printvault-backup-' + U.today() + '.json';
+    const path = AutoBackup.DIR + '/' + name;
+    try{
+      const blob = new Blob([JSON.stringify(Settings.backupData(), null, 2)], {type:'application/json'});
+      await FS.writeFile(root.id, path, blob);
+      const kept = (Store.settings.autoBackups || []).filter(x=>x.name !== name)
+        .concat([{name, at: Date.now(), rootId: root.id, bytes: blob.size}]);
+      // oldest first, so the tail is what we drop
+      kept.sort((a,b)=>a.at - b.at);
+      while(kept.length > AutoBackup.KEEP){
+        const old = kept.shift();
+        try{ await FS.deleteFile(old.rootId || root.id, AutoBackup.DIR + '/' + old.name); }catch(e){}
+      }
+      Store.settings.autoBackups = kept;
+      Store.settings.autoBackupAt = Date.now();
+      Store.settings.autoBackupSig = AutoBackup.signature();
+      await Store.saveSettings();
+      console.info('[PrintVault] backup written to ' + root.name + '/' + path);
+      return path;
+    }catch(e){
+      // a read-only or disconnected folder is not worth interrupting anyone over
+      console.warn('[PrintVault] automatic backup failed:', e && e.message || e);
+      return null;
+    }
+  }
+};
+
+/* ============================================================
    TagBox — chips with autocomplete, for tags and collections
 
    A comma separated field with a datalist looks like autocomplete but is not:
@@ -5279,6 +5348,8 @@ const Settings = {
         ['dark','light'].map(t=>'<button class="'+(s.theme===t?'on':'')+'" onclick="PV.Settings.theme(\''+t+'\')">'+
           (t==='dark'?I.moon:I.sun)+' '+t[0].toUpperCase()+t.slice(1)+'</button>').join('')+'</div></div>';
 
+    const ab = (s.autoBackups || []).slice(-1)[0];
+    const last = ab ? ab.name + '  (' + U.bytes(ab.bytes || 0) + ')' : '';
     h += '<div class="panel"><h3>'+I.dl+' Backup</h3>'+
       '<p style="color:var(--dim);font-size:12.5px;line-height:1.65;margin:0 0 12px">Exports your tags, notes, ratings, print history, filament, printers and queue as JSON. '+
       'Preview images are not included, since they regenerate.</p>'+
@@ -5291,6 +5362,21 @@ const Settings = {
         '<button class="b" onclick="PV.Settings.importJSON()">'+I.up+' Import backup</button>'+
         '<button class="b" onclick="PV.Settings.exportCSV()">'+I.dl+' Prints as CSV</button>'+
       '</div>'+
+      '<div style="margin-top:16px;padding-top:14px;border-top:1px solid var(--line)">'+
+        '<b style="font-size:12.5px">Automatic</b>'+
+        '<p style="color:var(--dim);font-size:12.5px;line-height:1.65;margin:6px 0 10px">Writes the same file into '+
+        '<span class="mono" style="font-size:11.5px">'+U.esc((Store.roots[0]||{}).name||'your library')+
+        '/'+AutoBackup.DIR+'</span>, keeping the last '+AutoBackup.KEEP+
+        '. Skipped when nothing has changed since the last one. Your model files are never at risk; this is for the '+
+        'tags, notes, ratings and print history, which live only in this database.</p>'+
+        '<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">'+
+          '<select id="sAuto" onchange="PV.Settings.set(\'autoBackup\',this.value)" style="width:auto">'+
+            [['weekly','Weekly'],['daily','Daily'],['off','Off']].map(o=>'<option value="'+o[0]+'"'+
+              ((s.autoBackup||'weekly')===o[0]?' selected':'')+'>'+o[1]+'</option>').join('')+'</select>'+
+          '<button class="b" onclick="PV.Settings.backupNow()">Back up now</button>'+
+          (last ? '<span style="color:var(--dim2);font-size:12.5px">Last: '+U.esc(last)+'</span>'
+                : '<span style="color:var(--dim2);font-size:12.5px">None yet</span>')+
+        '</div></div>'+
       (Store.parked.length ? '<div class="note" style="margin:12px 0 0">Tags and notes for <b>'+Store.parked.length+
         '</b> model'+(Store.parked.length===1?'':'s')+' are waiting for a folder that has not been scanned yet. '+
         'They attach on the next scan. <a href="#" onclick="PV.Settings.dropParked();return false">Discard them</a></div>' : '')+
@@ -5408,8 +5494,8 @@ const Settings = {
       (dangling ? ', including '+dangling+' that pointed at an image that had gone' : ''));
   },
 
-  exportJSON(){
-    const data = {
+  backupData(){
+    return {
       app:'PrintVault', version:APP_VERSION, exportedAt:new Date().toISOString(),
       settings: Store.settings,
       roots: Store.roots.map(r=>({id:r.id, name:r.name, addedAt:r.addedAt, lastScan:r.lastScan})),
@@ -5422,8 +5508,11 @@ const Settings = {
       parked: Store.parked,   // metadata still waiting for a folder, don't lose it
       prints: Store.prints, filaments: Store.filaments, printers: Store.printers, queue: Store.queue
     };
+  },
+
+  exportJSON(){
     U.download('printvault-backup-'+U.today()+'.json',
-      new Blob([JSON.stringify(data, null, 2)], {type:'application/json'}));
+      new Blob([JSON.stringify(Settings.backupData(), null, 2)], {type:'application/json'}));
     Toast.ok('Backup exported');
   },
 
@@ -5486,6 +5575,12 @@ const Settings = {
         }, 'Import');
     };
     inp.click();
+  },
+
+  async backupNow(){
+    const p = await AutoBackup.run(true);
+    if(p) { UI.render(); Toast.ok('Backup written to '+((Store.roots[0]||{}).name||'')+'/'+p); }
+    else Toast.err('Could not write a backup. Check the folder is connected and writable.');
   },
 
   dropParked(){
@@ -5588,13 +5683,14 @@ async function checkPerms(){
   UI.render();
   checkPerms();
   Monitor.start();
+  AutoBackup.run();
   if(!FS.supported || !FS.secure){
     document.getElementById('btnAddRoot').classList.add('hidden');
     document.getElementById('btnScan').classList.add('hidden');
   }
 })();
 
-window.PV = {U, I, DB, Store, Toast, Prog, Modal, FS, Scan, Meta, Send, AutoTag, Monitor, TagBox, Render, Thumbs, Work,
+window.PV = {U, I, DB, Store, Toast, Prog, Modal, FS, Scan, Meta, Send, AutoTag, Monitor, TagBox, AutoBackup, Render, Thumbs, Work,
   UI, Library, Detail, Viewer, Archive, Prints, Filament, Queue, Dupes, Stats, Settings, APP_VERSION};
 
 
