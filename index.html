@@ -3952,7 +3952,9 @@ const Prints = {
     const est = (m && m.est) || {};
     const models = U.sortBy(Store.models, x=>x.name.toLowerCase(), 'asc');
     const modelOpts = models.length > 4000
-      ? (m ? '<option value="'+U.attr(m.id)+'" selected>'+U.esc(m.name)+'</option>' : '')
+      // too many to list, so offer the one already set plus the way out
+      ? '<option value="">(not in library)</option>'+
+        (m ? '<option value="'+U.attr(m.id)+'" selected>'+U.esc(m.name)+'</option>' : '')
       : '<option value="">(not in library)</option>'+models.map(x=>
           '<option value="'+U.attr(x.id)+'"'+((p?p.modelId:modelId)===x.id?' selected':'')+'>'+U.esc(x.name)+'</option>').join('');
 
@@ -4751,7 +4753,8 @@ const Queue = {
     const m = Store.model(modelId);
     const q = Object.assign({id: id||U.id('q'), addedAt: Date.now(), status:'pending'},
       (id?Store.queue.find(x=>x.id===id):null) || {}, {
-      modelId, name: m?m.name:'', qty: Math.max(1, Modal.num('qQty')||1),
+      modelId, name: m ? m.name : ((id && Store.queue.find(x=>x.id===id) || {}).name || ''),
+      qty: Math.max(1, Modal.num('qQty')||1),
       priority: Modal.val('qPrio'), printer: Modal.val('qPrinter').trim(),
       filamentId: Modal.val('qFil'), notes: Modal.val('qNotes').trim()
     });
