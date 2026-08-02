@@ -3842,6 +3842,11 @@ const MATERIALS = ['PLA','PLA+','PETG','ABS','ASA','TPU','Nylon','PC','PVA','HIP
 
 const Prints = {
   filter:{printer:'', result:''},
+  clearFilters(){
+    Prints.filter = {printer:'', result:''};
+    if(UI.filter.q){ UI.filter.q = ''; const q = document.getElementById('q'); if(q) q.value = ''; }
+    UI.render();
+  },
 
   render(v){
     const s = Store.settings;
@@ -3851,7 +3856,12 @@ const Prints = {
     if(Prints.filter.result) all = all.filter(p=>p.result === Prints.filter.result);
     if(toks.length) all = all.filter(p=>{
       const m = Store.model(p.modelId);
-      return U.match((m?m.name:'')+' '+(p.printer||'')+' '+(p.material||'')+' '+(p.notes||'')+' '+(p.filamentName||''), toks);
+      // A print logged from a job started at the printer has no model, only
+      // the name it reported, so searching the model alone found nothing.
+      const f = p.filamentId ? Store.filament(p.filamentId) : null;
+      return U.match([(m ? m.name : p.modelName || ''), p.jobFile || '', p.printer || '',
+        p.material || '', p.notes || '', f ? f.brand+' '+f.material+' '+(f.colorName||'') : ''
+      ].join(' '), toks);
     });
 
     const ok = all.filter(p=>p.result==='success').length;
@@ -3878,7 +3888,17 @@ const Prints = {
         '<div class="sub">filament + power</div></div>'+
       '</div>';
 
-    if(!all.length){
+    if(!all.length && Store.prints.length){
+      // hidden rather than absent, which is a very different thing to be told
+      const bits = [Prints.filter.printer ? 'printer ' + U.esc(Prints.filter.printer) : null,
+        Prints.filter.result ? 'result ' + U.esc(Prints.filter.result) : null,
+        toks.length ? 'the search' : null].filter(Boolean);
+      h += '<div class="pv-empty">'+I.print+'<h3>Nothing matches</h3>'+
+        '<p>You have '+Store.prints.length+' print'+(Store.prints.length===1?'':'s')+' logged, but '+
+        (bits.length ? bits.join(' and ') : 'the current filters')+' hides '+
+        (Store.prints.length===1?'it':'them all')+'.</p>'+
+        '<button class="b p" onclick="PV.Prints.clearFilters()">Clear filters</button></div>';
+    } else if(!all.length){
       h += '<div class="pv-empty">'+I.print+'<h3>No prints logged yet</h3>'+
         '<p>Log a print when it finishes and PrintVault remembers the printer, filament, layer height, and how it turned out. '+
         'Next time you open that model the settings are right there.</p>'+
