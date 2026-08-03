@@ -1123,10 +1123,26 @@ function pvWorkerMain(){
             if(t.length < 6) return null;
             return [parseInt(t.slice(0,2),16)/255, parseInt(t.slice(2,4),16)/255, parseInt(t.slice(4,6),16)/255];
           };
-          const used = new Set(Object.values(ext));
-          // one filament for everything is not worth colouring: it would just
-          // repaint the whole model in that colour and lose the shading cue
-          if(used.size > 1) colourFor = oid => hex(palette[(ext[oid] || 1) - 1]);
+          /* Colour it even when there is only one filament. Skipping that made
+             a white model show white on its card, from the slicer's own
+             render, and orange in the 3D view, which just looks broken.
+             Near black is lifted a little so the shape still reads; the
+             alternative is a silhouette with no detail in it. */
+          /* Dark filament has almost no range left once the shading is
+             applied, so black came out a silhouette. Measured against a real
+             black model: a base around 0.42 keeps roughly the same amount of
+             visible shape as the old flat colour did. The hue is kept, only
+             the brightness is raised, so grey stays grey and navy stays navy. */
+          const FLOOR = 0.42;
+          const lift = c => {
+            if(!c) return c;
+            const lum = 0.2126*c[0] + 0.7152*c[1] + 0.0722*c[2];
+            if(lum >= FLOOR) return c;
+            if(lum < 0.005) return [FLOOR, FLOOR, FLOOR * 1.05];   // pure black
+            const k = FLOOR / lum;
+            return c.map(v => Math.min(1, v * k));
+          };
+          colourFor = oid => lift(hex(palette[(ext[oid] || 1) - 1]));
         }
       }
     }catch(e){}
