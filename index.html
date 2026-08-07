@@ -3732,6 +3732,7 @@ const Viewer = {
         : '')+
       '<span class="hide-sm" style="color:var(--dim2);font-size:12px;align-self:center;margin-left:6px">Drag to orbit, scroll to zoom</span>'+
       '<div class="sp"></div>'+
+      (FS.canSend ? '<button class="b" onclick="PV.Viewer.send()">'+I.print+' Send</button>' : '')+
       '<button class="b" onclick="PV.Viewer.reset()">Reset view</button>'+
       '<button class="b p" onclick="PV.Viewer.useAsCover()">Use as cover</button>', 'wide');
     await Viewer.load();
@@ -3835,6 +3836,17 @@ const Viewer = {
       bg: dark ? [0.055,0.063,0.078] : [0.94,0.95,0.97]}, d.col);
   },
   reset(){ Viewer.az=-52; Viewer.el=26; Viewer.zoom=1; Viewer.paint(); },
+  /* Sends the part on screen rather than whatever the model would have
+     picked, since having opened it to look at it is a clear enough signal. */
+  send(){
+    const d = Viewer.data;
+    if(!d || !d.file) return Toast.err('Nothing loaded to send');
+    if(!FS.canSend) return Toast.err('Sending needs the desktop app');
+    const m = Store.model(d.file.modelId);
+    if(!m) return Toast.err('No model for this file');
+    Send.open(m.id, d.file.id);
+  },
+
   async useAsCover(){
     const d = Viewer.data; if(!d) return;
     const m = Store.model(d.file.modelId); if(!m) return Toast.err('No model for this file');
@@ -4385,14 +4397,16 @@ const Send = {
   },
   printers(){ return Store.printers.filter(p=>p.addr); },
 
-  open(modelId){
+  open(modelId, preferFileId){
     const m = Store.model(modelId); if(!m) return;
     if(!FS.canSend) return Toast.err('Sending needs the desktop app');
     const files = Send.candidates(m);
     if(!files.length) return Toast.err('Nothing here a slicer or printer could take');
     Send._model = modelId;
 
-    const opts = files.map((f,i)=>'<option value="'+U.attr(f.id)+'"'+(i?'':' selected')+'>'+
+    // whatever you were looking at wins over the usual pick
+    const want = preferFileId && files.some(f=>f.id === preferFileId) ? preferFileId : (files[0]||{}).id;
+    const opts = files.map(f=>'<option value="'+U.attr(f.id)+'"'+(f.id===want?' selected':'')+'>'+
       U.esc(f.path === m.path ? f.name : f.path)+'  ('+U.bytes(f.size)+')</option>').join('');
     const prs = Send.printers();
     const sliced = files.filter(Send.sliced);
