@@ -749,6 +749,12 @@ const Modal = {
     m.innerHTML = prev.html;
     m.querySelectorAll('.tagbox[data-live]').forEach(b=>b.removeAttribute('data-live'));
     TagBox.wire(m);
+    /* Restoring a dialog puts its markup back, but the 3D view draws into one
+       shared canvas element, and that element belonged to the DOM we just
+       replaced. What comes back is an inert copy: the model looks like it has
+       vanished and Reset view appears to do nothing, because it is painting
+       into a canvas that is no longer on screen. Re-attach the real one. */
+    if(document.getElementById('vwWrap') && Viewer.data) Viewer.mount();
     Modal._title = prev.title;
     ovl.scrollTop = prev.scroll || 0;
   },
