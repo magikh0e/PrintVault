@@ -1011,7 +1011,7 @@ function pvWorkerMain(){
     return (n.length >= 12 && n.every(isFinite)) ? n : null;
   }
 
-  function parse3MFModel(text, maxTri, colourFor){
+  function parse3MFModel(text, maxTri, colourFor, skipIds){
     const objs = {};
     let i = 0;
     while((i = text.indexOf('<object', i)) >= 0){
@@ -1055,6 +1055,9 @@ function pvWorkerMain(){
     const leaves = [];
     const walk = (oid, mat, depth, root)=>{
       if(depth > 8) return;
+      // modifiers, negative volumes and support blockers are settings, not
+      // things that get printed. Drawing them put big blocks in the scene.
+      if(skipIds && skipIds.has(String(oid))) return;
       const o = objs[oid]; if(!o) return;
       if(o.ts.length) leaves.push({o, mat, root});
       for(const c of o.comps) walk(c.oid, mul12(c.mat, mat), depth + 1, root);
@@ -1108,10 +1111,17 @@ function pvWorkerMain(){
        against the top level object id, and the palette in project_settings.
        Without this every object renders the same flat colour, which for a
        multipart figure means losing the only thing that made it readable. */
-    let colourFor = null;
+    let colourFor = null, skipIds = null;
     try{
       const mse = z.entries.find(e=>/model_settings\.config$/i.test(e.name));
       const pse = z.entries.find(e=>/project_settings\.config$/i.test(e.name));
+      if(mse){
+        const ms0 = td.decode(await zipRead(z, mse));
+        // <part id="5" subtype="modifier_part"> and friends
+        const pre = /<part\s+id="([^"]+)"\s+subtype="([^"]+)"/g;
+        let pm;
+        while((pm = pre.exec(ms0))) if(pm[2] !== 'normal_part') (skipIds = skipIds || new Set()).add(pm[1]);
+      }
       if(mse && pse){
         const ms = td.decode(await zipRead(z, mse));
         let palette = null;
@@ -1166,7 +1176,7 @@ function pvWorkerMain(){
           for(const p of parts){ try{ merged += td.decode(await zipRead(z, p)); }catch(e){} }
           if(merged) text = merged + text;
         }
-        mesh = parse3MFModel(text, maxTri, colourFor);
+        mesh = parse3MFModel(text, maxTri, colourFor, skipIds);
       }catch(e){}
     }
     // slicer project metadata
