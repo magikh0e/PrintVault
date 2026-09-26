@@ -71,7 +71,16 @@ OLD=$(grep -oE 'PrintVault_[0-9.]+_x64_en-US\.msi' "$PAGE" | head -1 | grep -oE 
 # Headfit ships on its own schedule and has its own entry in the same JSON-LD.
 # It was reading 0.3.0 against an actual 0.8.1, so it rots exactly the same way
 # and is worth carrying here rather than leaving for someone to spot.
-HF=$(grep -oE "APP_VERSION = '[0-9.]+'" site/headfit.html 2>/dev/null | head -1 | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' || true)
+#
+# It lives in its own repo now and site/headfit.html is a fetched copy, so it
+# can legitimately be absent. Absent has to mean fetch it, not skip the check:
+# skipping is how it got to 0.3.0 in the first place.
+if [ ! -f site/headfit.html ]; then
+  say "No site/headfit.html yet, fetching it"
+  tools/headfit.sh >/dev/null || die "could not get headfit.html; run tools/headfit.sh to see why"
+fi
+HF=$(grep -oE "APP_VERSION = '[0-9.]+'" site/headfit.html | head -1 | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' || true)
+[ -n "$HF" ] || die "could not read a version out of site/headfit.html"
 HF_OLD=$(grep -oE 'headfit\.html","softwareVersion":"[0-9.]+' "$PAGE" | grep -oE '[0-9.]+$' || true)
 
 say "Site is on $OLD, app is $VER"
