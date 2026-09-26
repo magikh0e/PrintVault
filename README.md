@@ -181,6 +181,20 @@ and zstd, which browsers can't inflate at all.
 And Firefox and Safari don't implement the File System Access API, so the web
 version can't work there no matter what. The desktop build doesn't care.
 
+## Headfit
+
+There's a second tool that came out of this one:
+[Headfit](https://github.com/magikh0e/headfit), a helmet and mask fit bench.
+Build a head from three tape measurements, load the STL you were about to
+print, and see where the two collide before you spend eight hours, or three
+days, of filament finding out. It's one HTML file like this one, it runs at
+[printvault.magikh0e.pl/headfit.html](https://printvault.magikh0e.pl/headfit.html),
+and Settings in here has a button that opens it.
+
+It lives in its own repo. It's a separate tool on its own version number and
+nothing in it depends on PrintVault, but the site serves both, so
+`tools/headfit.sh` fetches the file when a deploy needs it.
+
 ## Support
 
 Free and open source, built and maintained in my own time, with no accounts,
