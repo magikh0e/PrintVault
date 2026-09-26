@@ -137,9 +137,26 @@ say "All $(wc -l <<< "$urls") links resolve"
 cp "$PAGE" "$REAL"
 echo "   $REAL updated"
 
+# lastmod is the only recrawl signal we get to send, and it sat at 2026-09-17
+# while this script rewrote and redeployed the home page on every release.
+# The stamper moves a date only when the bytes behind it moved, and exits 10
+# when it rewrote the sitemap, which is the only case worth uploading.
+say "Checking the sitemap dates"
+SM=0
+python tools/sitemap-stamp.py || SM=$?
+[ "$SM" = 0 ] || [ "$SM" = 10 ] || die "tools/sitemap-stamp.py failed"
+
 if [ "$DEPLOY" = 1 ]; then
   say "Deploying $REAL"
   scp -i "$KEY" -P "$PORT" "$REAL" "$HOST:$ROOT/index.html" || die "upload failed"
+  # It can also have stamped guide.html or headfit.html, which this script does
+  # not upload. Step 12 of the release routine sends those, right after this,
+  # so the gap is minutes. If you are running this on its own and the guide
+  # changed, deploy the rest of the site too or the date will be ahead of it.
+  if [ "$SM" = 10 ]; then
+    scp -i "$KEY" -P "$PORT" site/sitemap.xml "$HOST:$ROOT/sitemap.xml" || die "sitemap upload failed"
+    echo "   sitemap.xml uploaded"
+  fi
   live=$(curl -s "$SITE/?cb=$$" | grep -c "PrintVault_${VER}_" || true)
   [ "${live:-0}" -gt 0 ] || die "the live page is not serving $VER links yet"
   echo "   Live page carries $live filenames for $VER"

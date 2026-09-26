@@ -95,4 +95,16 @@ if [ "$DEPLOY" = 1 ]; then
   live=$(curl -s "$SITE/headfit.html?cb=$$" | grep -oE "APP_VERSION = '[0-9.]+'" | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1 || true)
   [ "$live" = "$HF" ] || die "the site is serving ${live:-nothing} and not $HF"
   echo "   Live page is $HF"
+
+  # Headfit is in the sitemap, so a new version here is a page Google should
+  # come back for. Same stamper as the release script: it moves a date only
+  # when the file behind it moved, and exits 10 when there is one to upload.
+  say "Checking the sitemap dates"
+  SM=0
+  python tools/sitemap-stamp.py || SM=$?
+  [ "$SM" = 0 ] || [ "$SM" = 10 ] || die "tools/sitemap-stamp.py failed"
+  if [ "$SM" = 10 ]; then
+    scp -i "$KEY" -P "$PORT" site/sitemap.xml "$HOST:$ROOT/sitemap.xml" || die "sitemap upload failed"
+    echo "   sitemap.xml uploaded"
+  fi
 fi
