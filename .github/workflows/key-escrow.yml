@@ -14,7 +14,7 @@
 # that exists nowhere else.
 #
 # How to use it, once:
-#   1. Add a repo secret KEY_BACKUP_PASSPHRASE. Long, random, kept somewhere you
+#   1. Add a repo secret KEY_BACKUP_PHRASE. Long, random, kept somewhere you
 #      will still have in three years.
 #   2. Run this workflow by hand. It has no triggers other than that.
 #   3. Download the artifact and decrypt it locally:
@@ -23,7 +23,7 @@
 #      the algorithm in the public half are the key id, 0e4c7a98f2f7edfc, and the
 #      recovered private key carries the same id.
 #   4. Put key.txt where you will still have it, delete the local copy, delete
-#      the artifact, delete KEY_BACKUP_PASSPHRASE, and delete this workflow.
+#      the artifact, delete KEY_BACKUP_PHRASE, and delete this workflow.
 #
 # Step 4 is not tidying. An escrow path left switched on is a second way to lose
 # the key, and the artifact sitting in a public repo is the first.
@@ -43,14 +43,14 @@ jobs:
       - name: Encrypt the key inside the runner
         env:
           KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
-          PASS: ${{ secrets.KEY_BACKUP_PASSPHRASE }}
+          PASS: ${{ secrets.KEY_BACKUP_PHRASE }}
         run: |
           set -eu
           # No echo, no cat, no set -x anywhere in this job. GitHub masks secrets
           # in logs, but masking is a safety net and not a plan: it is defeated
           # by anything that transforms the value before printing it.
           test -n "${KEY:-}" || { echo "TAURI_SIGNING_PRIVATE_KEY is not set on this repo"; exit 1; }
-          test -n "${PASS:-}" || { echo "KEY_BACKUP_PASSPHRASE is not set; add it first"; exit 1; }
+          test -n "${PASS:-}" || { echo "KEY_BACKUP_PHRASE is not set; add it first"; exit 1; }
           printf '%s' "$KEY" > key.txt
           openssl enc -aes-256-cbc -pbkdf2 -iter 600000 -salt \
             -in key.txt -out key.enc -pass env:PASS
