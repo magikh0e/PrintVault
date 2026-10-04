@@ -455,7 +455,7 @@ table.t .num{font-family:var(--mono);text-align:right;font-size:12px}
  * Copyright (C) 2026 magikh0e
  * License: GPL-3.0-or-later (https://www.gnu.org/licenses/gpl-3.0.html)
  */
-const APP_VERSION = '0.2.30';
+const APP_VERSION = '0.2.31';
 
 /* ============================================================
    U — utilities
@@ -562,7 +562,8 @@ const I = (function(){
     eye: s('<path d="M1.8 10S4.7 4.5 10 4.5 18.2 10 18.2 10 15.3 15.5 10 15.5 1.8 10 1.8 10z"/><circle cx="10" cy="10" r="2.4"/>'),
     eyeOff: s('<path d="M8.6 5.1A6.9 6.9 0 0 1 10 4.5c5.3 0 8.2 5.5 8.2 5.5a14.6 14.6 0 0 1-2.4 3.1M5.3 5.9A14.4 14.4 0 0 0 1.8 10s2.9 5.5 8.2 5.5a7.5 7.5 0 0 0 3.1-.7M2.5 2.5l15 15"/>'),
     filter: s('<path d="M2.5 4h15l-5.8 6.6v5l-3.4 1.8v-6.8z"/>'),
-    ext: s('<path d="M12 2.5h5.5V8"/><path d="M17.5 2.5 9 11"/><path d="M15 11.5v4.2a1.8 1.8 0 0 1-1.8 1.8H4.3a1.8 1.8 0 0 1-1.8-1.8V6.8A1.8 1.8 0 0 1 4.3 5h4.2"/>')
+    ext: s('<path d="M12 2.5h5.5V8"/><path d="M17.5 2.5 9 11"/><path d="M15 11.5v4.2a1.8 1.8 0 0 1-1.8 1.8H4.3a1.8 1.8 0 0 1-1.8-1.8V6.8A1.8 1.8 0 0 1 4.3 5h4.2"/>'),
+    heart: s('<path d="M10 16.6 3.6 10.2a3.8 3.8 0 0 1 5.4-5.4l1 1 1-1a3.8 3.8 0 0 1 5.4 5.4z"/>')
   };
 })();
 
@@ -6688,6 +6689,22 @@ const Settings = {
         '<button class="b d" onclick="PV.Settings.clearIndex()">Clear file index</button>'+
         '<button class="b d" onclick="PV.Settings.clearAll()">Erase everything</button></div></div>';
 
+    /* Free, with nothing asked for and nothing taken, which is worth saying in
+       the one place a person goes looking for what an app is doing with their
+       data. Both links open outside: no payment anything is in this build. */
+    h += '<div class="panel"><h3>'+I.heart+' Support</h3>'+
+      '<p style="color:var(--dim);font-size:12.5px;line-height:1.65;margin:0 0 12px">'+
+      'PrintVault is free and open source, built and kept going in my own time, with no '+
+      'accounts, no tracking, no ads and nothing uploaded. If it has saved you a failed '+
+      'print or a few gigabytes, there are two ways to chip in: a one off, or something '+
+      'monthly. Neither unlocks anything, because there is nothing locked.</p>'+
+      '<a class="b g" href="https://buymeacoffee.com/magikh0e" target="_blank" rel="noopener noreferrer">'+
+        I.ext+' Buy me a beer</a> '+
+      '<a class="b g" href="https://www.patreon.com/magikh0e" target="_blank" rel="noopener noreferrer">'+
+        I.ext+' Patreon</a>'+
+      '<div class="hint" style="margin-top:10px">A bug report or a folder layout that breaks '+
+      'the scanner is worth just as much.</div></div>';
+
     h += '<div style="text-align:center;color:var(--dim2);font-size:12px;padding:20px 0 8px;line-height:1.7">'+
       '<b style="color:var(--dim)">PrintVault</b> v'+APP_VERSION+' &copy; 2026 '+
       '<a href="https://magikh0e.pl" target="_blank" rel="noopener noreferrer me">magikh0e</a><br>'+
@@ -7494,6 +7511,9 @@ const Keys = {
 
 const WhatsNew = {
   notes: [
+    ['0.2.31', [
+      'A Support panel in Settings. The app never said it was free or who makes it, and that is the first thing worth knowing about something you point at your whole library.'
+    ]],
     ['0.2.30', [
       'Headfit, under Settings. It builds a head from tape measurements so you can check a helmet or a mask fits before you print it, and it has been on the site all along with no way to find it from in here.'
     ]],
