@@ -20,6 +20,11 @@
 # Each page wants its own card. Headfit pointed at the main one for a while and
 # invited people to a helmet fit tool with a picture saying their STL folder was
 # a landfill.
+#
+# og-headfit.svg stays here even though Headfit itself moved to its own repo on
+# 2026-09-25, because this is what serves that page and what deploys the png.
+# The copy that went over with the split was deleted for the same reason. If the
+# card is ever redrawn, it is redrawn here.
 
 set -e
 
