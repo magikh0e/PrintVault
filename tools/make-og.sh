@@ -24,9 +24,9 @@
 set -e
 
 # og.svg and og.png live in site/, which is gitignored, so this script is kept
-# in the repo instead and reaches across to them. Same arrangement as
-# mirror-release.sh, and for the same reason: a helper stored inside the folder
-# it maintains does not survive a fresh clone.
+# in the repo instead and reaches across to them. Same arrangement as the other
+# scripts here, and for the same reason: a helper stored inside the folder it
+# maintains does not survive a fresh clone.
 SITEDIR=$(cd "$(dirname "$0")/../site" 2>/dev/null && pwd) ||
   { echo "cannot find the site folder next to $(dirname "$0")" >&2; exit 1; }
 NAME=${1:-og}

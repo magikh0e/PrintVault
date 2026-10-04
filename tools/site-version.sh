@@ -7,10 +7,11 @@
 # the version in the filename, so the moment a release goes out they all 404
 # until this runs.
 #
-# This used to live inside mirror-release.sh, which found the current version
-# by grepping href="/dl/<version>/ out of the page. Those links went back to
-# GitHub when the account was restored on 2026-09-25, so that anchor no longer
-# exists and the step needed a home of its own.
+# This used to live inside a mirror script that found the current version by
+# grepping href="/dl/<version>/ out of the page. Those links went back to GitHub
+# when the account was restored on 2026-09-25, so the anchor stopped existing,
+# the step needed a home of its own, and the mirror script has since been
+# deleted rather than left around looking like it still runs.
 #
 #   tools/site-version.sh            move the site to whatever index.html says
 #   tools/site-version.sh 0.2.29     move it to that version

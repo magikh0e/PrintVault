@@ -60,11 +60,15 @@ Options -Indexes
     # A published installer never changes. The version is in its path, so a new
     # release cannot collide with a cached copy of an old one.
     #
-    # Source archives need the opposite and are carved out by their own
-    # .htaccess in dl/<version>/source/, uploaded by tools/mirror-release.sh.
-    # The exception has to live down there and has to be a FilesMatch itself:
-    # Apache merges section directives after plain ones, so a plain rule in a
-    # child directory still loses to this block. Both were tried.
+    # Nothing is actually served from here any more: every download on the site
+    # points at GitHub releases, and public_html/dl was deleted once 0.2.29
+    # shipped. The block stays because the next outage would put files back
+    # under this root and the rule would need to already be right.
+    #
+    # If that happens, remember source archives want the opposite of immutable,
+    # and that the carve-out has to be a FilesMatch in its own .htaccess beside
+    # them: Apache merges section directives after plain ones, so a plain rule
+    # in a child directory still loses to this block. Both were tried.
     Header set Cache-Control "public, max-age=31536000, immutable"
   </FilesMatch>
 </IfModule>
