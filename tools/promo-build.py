@@ -110,11 +110,11 @@ SEGMENTS = [
         (7.2, 10.6, "Duplicates, and what they are costing you"),
         (10.6, 13.0, "A record of what you printed, and with what"),
     ]),
-    ("headfit", 1.0, 11.5, "Headfit", [
+    ("headfit", 1.0, 12.0, "Headfit", [
         (0.0, 3.0, "A head built from three tape measurements"),
         (3.0, 5.2, "The helmet sits where you would wear it"),
         (5.2, 8.6, "Clearance painted on. Red is where it bites"),
-        (8.6, 11.5, "Check it from any angle before you commit"),
+        (8.6, 12.0, "Check it from any angle before you commit"),
     ]),
 ]
 

@@ -12,7 +12,8 @@ Needs both local servers up, which is what .claude/launch.json starts:
 real folder contains ends up in a video, and the banner saying so stays on
 screen rather than being cropped out.
 
-    py tools/promo-record.py
+    py tools/promo-record.py            both
+    py tools/promo-record.py headfit    just that one, when a click path changed
 """
 from pathlib import Path
 from playwright.sync_api import sync_playwright
@@ -105,18 +106,25 @@ def headfit(page):
         beat(page, 1.0)
 
     press("Analyse fit", 3.4)            # clearance painted onto the head
-    press("Side", 1.6)
-    press("Top", 1.4)
-    press("Iso", 1.6)
+    # Side then back to iso. Top is left out on purpose: straight down, a head
+    # with no face in frame is an egg, and it undoes the work the previous eight
+    # seconds did to make it read as a head.
+    press("Side", 2.2)
+    press("Iso", 2.4)
 
 
 if __name__ == "__main__":
     (OUT / "raw").mkdir(parents=True, exist_ok=True)
+    want = sys.argv[1:] or ["printvault", "headfit"]
+    jobs = {"printvault": (APP, printvault), "headfit": (HEADFIT, headfit)}
+    for name in want:
+        if name not in jobs:
+            sys.exit(f"no click path called {name}; try {' or '.join(jobs)}")
     t0 = time.time()
     with sync_playwright() as pw:
-        print("recording PrintVault")
-        record(pw, APP, "printvault", printvault)
-        print("recording Headfit")
-        record(pw, HEADFIT, "headfit", headfit)
+        for name in want:
+            url, steps = jobs[name]
+            print(f"recording {name}")
+            record(pw, url, name, steps)
     shutil.rmtree(OUT / "raw", ignore_errors=True)
     print(f"done in {time.time() - t0:.0f}s")
