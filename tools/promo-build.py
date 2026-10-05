@@ -19,6 +19,7 @@ with what is on screen.
 Needs ffmpeg and Chrome on PATH.
 """
 from pathlib import Path
+import os
 import shutil
 import subprocess
 import sys
@@ -56,14 +57,7 @@ SHELL = """<defs>
     <path d="M56 86V56h30"/><path d="M994 56h30v30"/><path d="M1024 1834v30h-30"/><path d="M86 1864H56v-30"/>
   </g>"""
 
-FOOT = """<g font-size="26" font-weight="600" letter-spacing="2">
-    <rect x="150" y="1606" width="300" height="66" rx="4" fill="none" stroke="#313d4e"/>
-    <text x="300" y="1648" fill="#e9edf4" text-anchor="middle">NO ACCOUNT</text>
-    <rect x="486" y="1606" width="444" height="66" rx="4" fill="none" stroke="#313d4e"/>
-    <text x="708" y="1648" fill="#e9edf4" text-anchor="middle">NOTHING UPLOADED</text>
-  </g>
-  <text x="540" y="1762" font-size="32" fill="#8f9aac" text-anchor="middle" letter-spacing="1">printvault.magikh0e.pl</text>
-  <text x="540" y="1822" font-size="26" fill="#67718a" text-anchor="middle" letter-spacing="1.6">FREE AND OPEN SOURCE  ·  GPL-3.0</text>"""
+FOOT = """<text x="540" y="1836" font-size="27" fill="#67718a" text-anchor="middle" letter-spacing="1.6">printvault.magikh0e.pl  ·  FREE AND OPEN SOURCE  ·  NOTHING UPLOADED</text>"""
 
 MARK = """<g transform="translate(%d,%d) scale(%s)">
     <path d="M16 2 3 9v14l13 7 13-7V9z" fill="none" stroke="#e9edf4" stroke-opacity=".38" stroke-width="1.6" stroke-linejoin="round"/>
@@ -146,17 +140,20 @@ def esc(text):
 
 
 def build_segment(name, start, dur, heading, captions):
-    chain = [f"[1:v]scale=1040:-2[c]", f"[0:v][c]overlay=(W-w)/2:618[v0]"]
+    chain = [f"[1:v]scale=980:-2[c]", f"[0:v][c]overlay=(W-w)/2:292[v0]"]
     label = ("[v0]drawtext=fontfile='%s':text='%s':fontcolor=#e9edf4:fontsize=58:"
-             "x=(w-text_w)/2:y=452[v1]" % (FONTB, esc(heading)))
+             "x=(w-text_w)/2:y=196[v1]" % (FONTB, esc(heading)))
     chain.append(label)
     tag = "v1"
     for i, (a, b, text) in enumerate(captions):
         nxt = f"c{i}"
         chain.append(
             "[%s]drawtext=fontfile='%s':text='%s':fontcolor=#c6cedb:fontsize=36:"
-            "x=(w-text_w)/2:y=1372:enable='between(t,%.2f,%.2f)'[%s]"
-            % (tag, FONT, esc(text), a, b, nxt))
+            # between() includes both ends, so neighbouring captions both draw
+            # on the single frame where one window's end is the next one's
+            # start, and the two render on top of each other. Stop a frame short.
+            "x=(w-text_w)/2:y=1726:enable='between(t,%.2f,%.2f)'[%s]"
+            % (tag, FONT, esc(text), a, b - 1.0 / FPS, nxt))
         tag = nxt
     out = OUT / f"seg-{name}.mp4"
     run(["ffmpeg", "-v", "error", "-loop", "1", "-i", str(OUT / "frame.png"),
@@ -195,9 +192,20 @@ if __name__ == "__main__":
 
     listing = OUT / "parts.txt"
     listing.write_text("".join(f"file '{p.as_posix()}'\n" for p in parts), encoding="utf-8")
+    # Concat into a temp name first. Windows refuses to overwrite a file that
+    # something has open, and a video player holding the last cut is the normal
+    # state of affairs while you are iterating on it. Failing after the encode
+    # has already run is a waste of the only slow part.
     final = OUT / "printvault-headfit-reel.mp4"
+    tmp = OUT / "printvault-headfit-reel.new.mp4"
     run(["ffmpeg", "-v", "error", "-f", "concat", "-safe", "0", "-i", str(listing),
-         "-c", "copy", "-movflags", "+faststart", "-y", str(final)])
+         "-c", "copy", "-movflags", "+faststart", "-y", str(tmp)])
+    try:
+        os.replace(tmp, final)
+    except OSError:
+        print(f"\n{final.name} is open somewhere, so the new cut is {tmp.name}.")
+        print("Close it and rename, or re-run this once it is closed.")
+        final = tmp
     size = final.stat().st_size / 1_000_000
     dur = subprocess.run(["ffprobe", "-v", "error", "-show_entries", "format=duration",
                           "-of", "csv=p=0", str(final)], capture_output=True, text=True).stdout.strip()

@@ -25,7 +25,11 @@ ROOT = Path(__file__).resolve().parent.parent
 OUT = ROOT / "promo"
 APP = "http://localhost:9123/index.html?demo"
 HEADFIT = "http://localhost:9124/headfit.html"
-SIZE = {"width": 1280, "height": 800}
+# Portrait, because the reel is portrait. Filming at 1280x800 and scaling it
+# into a 1080x1920 canvas left the clip filling barely a third of the height
+# with dead space above and below. Both apps hold up at 1000x1400: PrintVault
+# keeps its sidebar and a three wide grid, Headfit keeps a large viewport.
+SIZE = {"width": 1000, "height": 1400}
 
 
 def beat(page, seconds):
