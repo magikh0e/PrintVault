@@ -106,6 +106,9 @@ for b in blocks:
 
     cur = re.search(r"<lastmod>\s*(.*?)\s*</lastmod>", block, re.S)
     if cur and cur.group(1) == today:
+        # Changed, but already dated today by an earlier run. Saying nothing
+        # here reads as "nothing changed", which is a different fact.
+        print("   %s changed again today, lastmod already %s" % (name, today))
         continue
     if cur:
         block = block[:cur.start(1)] + today + block[cur.end(1):]
