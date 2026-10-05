@@ -1,0 +1,92 @@
+name: It read my library wrong
+description: Models grouped, split, skipped, called duplicates, or sliced settings read wrong.
+title: "library: "
+labels: [scanner]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        This is the report worth sending. The scanner is guesswork over folder names and
+        file contents, and it is only ever as good as the layouts it has been shown. Every
+        fix in this area came from somebody describing a folder nobody had thought of.
+
+        You do not need to send any files. The shape of the folders is the evidence.
+
+  - type: dropdown
+    id: kind
+    attributes:
+      label: What did it get wrong
+      options:
+        - Grouped two different models into one
+        - Split one model into several
+        - Called two formats of one model a duplicate
+        - Missed a duplicate that is really there
+        - Skipped a model entirely
+        - Read the slicer settings wrong, or not at all
+        - Something else
+    validations:
+      required: true
+
+  - type: textarea
+    id: tree
+    attributes:
+      label: The folder layout
+      description: >
+        A sketch is enough and real names help, since the names are usually the cause.
+        Rename anything you would rather not post, but keep the shape and the punctuation.
+      value: |
+        3D Print Files/
+          Some Model Name/
+            model_v2.stl
+            model_v2.3mf
+          Some Model Name STL/
+            ...
+      render: text
+    validations:
+      required: true
+
+  - type: textarea
+    id: outcome
+    attributes:
+      label: What PrintVault did, and what it should have done
+      description: What it showed you, and what the right answer would have been.
+    validations:
+      required: true
+
+  - type: dropdown
+    id: build
+    attributes:
+      label: Which build
+      options:
+        - Browser
+        - Desktop app
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: The number beside the name in the header, for example 0.2.31.
+      placeholder: "0.2.31"
+    validations:
+      required: true
+
+  - type: input
+    id: size
+    attributes:
+      label: Roughly how big is the library
+      description: Models and files, near enough. It changes which cases matter.
+      placeholder: "about 400 models, 3000 files"
+    validations:
+      required: false
+
+  - type: textarea
+    id: anything
+    attributes:
+      label: Anything else
+      description: >
+        A screenshot of the duplicates or the model page helps. Do not paste a backup
+        export: it carries your notes and your whole file list.
+    validations:
+      required: false

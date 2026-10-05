@@ -1,8 +1,16 @@
-# Questions and ideas belong in Discussions, so the tracker stays things that
-# are actually broken. Blank issues stay on: somebody with a report that does
-# not fit the form should not be turned away by it.
-blank_issues_enabled: true
+# Blank issues stay off now that there are two forms. Both ask for the things
+# that are tedious to chase one comment at a time, and everything they do not
+# cover is a discussion rather than a defect.
+blank_issues_enabled: false
 contact_links:
   - name: Question, or an idea for a feature
     url: https://github.com/magikh0e/PrintVault/discussions
-    about: Anything that is not broken. Folder layouts it groups badly are especially welcome.
+    about: Anything that is not broken. Folder habits, what it should do next, how you use it.
+  - name: Headfit, the helmet and mask fit bench
+    url: https://github.com/magikh0e/headfit/discussions
+    about: Linked from Settings, but a separate project with its own issues and discussions.
+  - name: Try the demo first
+    url: https://printvault.magikh0e.pl/app/?demo
+    about: >
+      An invented library in memory, which tells you quickly whether the problem is the
+      app or something about your own folders.
