@@ -1,10 +1,8 @@
-# Puts the Sponsor button on the repo page. The README carries the same links;
-# this is the one GitHub itself reads. All three are the same handle, which is
-# not something GitHub checks, so a typo here is a dead button nobody reports.
+# Puts the Sponsor button on the repo page. The README carries the same link;
+# this is the one GitHub itself reads.
 #
-# github: needs GitHub Sponsors enabled on the account before it can take
-# anything. Until then the entry is listed and the page it leads to cannot
-# accept a sponsorship, so it costs nothing to carry and does nothing either.
-github: magikh0e
+# github: and patreon: were both here briefly and came out again: GitHub
+# Sponsors is not enabled on the account, so its entry led to a page that could
+# not take anything, and Patreon went with it rather than leaving the button
+# listing options that are not really open.
 buy_me_a_coffee: magikh0e
-patreon: magikh0e

@@ -220,9 +220,6 @@ helps keep it going.
 
 [![Buy me a beer](https://img.buymeacoffee.com/button-api/?text=Buy%20me%20a%20beer&emoji=%F0%9F%8D%BA&slug=magikh0e&button_colour=FFDD00&font_colour=000000&font_family=Cookie&outline_colour=000000&coffee_colour=ffffff)](https://buymeacoffee.com/magikh0e)
 
-Or [Patreon](https://www.patreon.com/magikh0e) if a monthly thing suits you
-better. Either way it goes to the same person and the same projects.
-
 Bug reports and folder layouts that break the scanner are just as useful.
 
 Something broken goes in [Issues](https://github.com/magikh0e/PrintVault/issues).
