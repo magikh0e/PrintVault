@@ -27,16 +27,18 @@ you close the tab.
 
 ### Thirty seconds of it working
 
-<a href="https://printvault.magikh0e.pl/#reel"><img src="docs/reel-poster.webp" width="300"
+<a href="https://youtu.be/B8cpOXRhWRE"><img src="docs/reel-poster.webp" width="300"
  alt="PrintVault and Headfit, thirty seconds of it working"></a>
 
 The library, a model with its files and settings, the duplicates, the print log,
 then Headfit checking a helmet against a head built from tape measurements.
-Filmed against the demo library, so every model in it is invented. It plays on
-[the site](https://printvault.magikh0e.pl/#reel), or the file is attached to
-[the latest release](https://github.com/magikh0e/PrintVault/releases/latest) if
-you would rather have it. GitHub will not play a video that lives in a repo,
-which is why this is a poster and not a player.
+Filmed against the demo library, so every model in it is invented.
+
+It plays on [YouTube](https://youtu.be/B8cpOXRhWRE) or on [the site](https://printvault.magikh0e.pl/#reel),
+and the file itself is attached to
+[the latest release](https://github.com/magikh0e/PrintVault/releases/latest).
+GitHub will not play a video that lives in a repo, which is why this is a poster
+and not a player.
 
 There's a guide to [organising a folder full of 3D print files](https://printvault.magikh0e.pl/guide.html)
 if you want the approach before the tool: what to index, how to tag it so the
