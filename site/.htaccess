@@ -33,6 +33,13 @@ Options -Indexes
   Header always set X-Content-Type-Options "nosniff"
   Header always set Referrer-Policy "strict-origin-when-cross-origin"
   Header always set X-Frame-Options "SAMEORIGIN"
+  # ...except the reel. X-Frame-Options applies to every response, including
+  # a bare mp4, and anything that embeds the file by framing its URL then gets
+  # refused by the browser. The page it sits on is still SAMEORIGIN; a video
+  # file has no clickjacking surface of its own to protect.
+  <FilesMatch "\.(mp4|webm)$">
+    Header unset X-Frame-Options
+  </FilesMatch>
   Header always set Permissions-Policy "geolocation=(), microphone=(), camera=(), payment=()"
 </IfModule>
 
@@ -81,7 +88,11 @@ Options -Indexes
   ExpiresByType image/png  "access plus 1 month"
   ExpiresByType image/webp "access plus 1 month"
   ExpiresByType image/svg+xml "access plus 1 month"
-  ExpiresByType video/mp4 "access plus 1 month"
+  # One day, not a month. The reel keeps the same filename when it is re-cut,
+  # so a long TTL means the edge serves the old one for weeks while the origin
+  # has the new one and every check with a cache buster says it is fine. That
+  # already happened once.
+  ExpiresByType video/mp4 "access plus 1 day"
   # The app is one HTML file that updates in place, so it must never be cached.
   ExpiresByType text/html "access plus 0 seconds"
 </IfModule>
