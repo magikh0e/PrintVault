@@ -67,3 +67,9 @@ rings/
 
 # Python bytecode
 __pycache__/
+
+# Video, the clips it was cut from and the cards rendered along the way. All of
+# it is output: tools/promo-record.py drives the two apps and tools/promo-build.py
+# cuts the reel, so a fresh clone rebuilds it from the scripts rather than
+# carrying megabytes of mp4 around in git forever.
+promo/
